@@ -486,7 +486,13 @@ select:focus {
   padding: 0 11px 11px;
 }
 
-.template-list button {
+.template-option {
+  display: grid;
+  gap: 8px;
+}
+
+.template-list .template-select-button,
+.template-list .history-item-button {
   width: 100%;
   padding: 11px 12px;
   text-align: left;
@@ -497,14 +503,19 @@ select:focus {
   line-height: 1.45;
 }
 
-.template-list button:hover {
+.template-list .template-select-button:hover,
+.template-list .history-item-button:hover {
   border-color: #64748b;
 }
 
-.template-list button.gas-template {
+.template-list .template-select-button.gas-template {
   color: #fef3c7;
   background: rgba(146, 64, 14, 0.16);
   border-color: rgba(251, 191, 36, 0.34);
+}
+
+.template-option .template-editor {
+  margin-top: 0;
 }
 
 .history-panel summary {

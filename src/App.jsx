@@ -130,7 +130,7 @@ const GENERAL_TEMPLATES = [
     id: 'unit-defect',
     label: '[]호기 []결함 확인',
     fields: [
-      { key: 'unitNo', label: '호기', type: 'text', placeholder: '예: 3' },
+      { key: 'unitNo', label: '호기', type: 'text', placeholder: '예: GCS 3', uppercase: true },
       { key: 'defect', label: '결함 내용', type: 'text', placeholder: '예: Valve ' },
     ],
     build: (values) => `${values.unitNo}호기 ${values.defect}결함 확인`,
@@ -139,7 +139,7 @@ const GENERAL_TEMPLATES = [
     id: 'pipe-defect',
     label: '[]배관 []결함 확인',
     fields: [
-      { key: 'pipe', label: '배관명', type: 'text', placeholder: '예: PCW ' },
+      { key: 'pipe', label: '배관명', type: 'text', placeholder: '예: PCW ', uppercase: true },
       { key: 'defect', label: '결함 내용', type: 'text', placeholder: '예: Flange ' },
     ],
     build: (values) => `${values.pipe}배관 ${values.defect}결함 확인`,
@@ -512,12 +512,15 @@ function TemplateEditor({ template, onApply, onCancel }) {
               <input
                 value={values[field.key]}
                 placeholder={field.placeholder || ''}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const nextValue = field.uppercase
+                    ? event.target.value.toUpperCase()
+                    : event.target.value
                   setValues((previous) => ({
                     ...previous,
-                    [field.key]: event.target.value,
+                    [field.key]: nextValue,
                   }))
-                }
+                }}
               />
             )}
           </label>
@@ -631,7 +634,7 @@ function GasAlarmBuilder({ incident, updateCurrent }) {
             <input
               value={draft.unitNo}
               placeholder="예: 3"
-              onChange={(event) => updateDraft('unitNo', event.target.value)}
+              onChange={(event) => updateDraft('unitNo', event.target.value.toUpperCase())}
             />
           </label>
         )}
@@ -764,14 +767,30 @@ function ReportCard({
         <summary>자주 쓰는 대응 문구</summary>
         <div className="template-list">
           {visibleTemplates.map((template) => (
-            <button
-              type="button"
-              className={GAS_TEMPLATES.some((item) => item.id === template.id) ? 'gas-template' : ''}
-              onClick={() => selectTemplate(template)}
-              key={template.id}
-            >
-              {template.label}
-            </button>
+            <div className="template-option" key={template.id}>
+              <button
+                type="button"
+                className={`template-select-button ${
+                  GAS_TEMPLATES.some((item) => item.id === template.id)
+                    ? 'gas-template'
+                    : ''
+                }`}
+                onClick={() => selectTemplate(template)}
+              >
+                {template.label}
+              </button>
+
+              {selectedTemplate?.id === template.id && (
+                <TemplateEditor
+                  template={selectedTemplate}
+                  onCancel={() => setSelectedTemplate(null)}
+                  onApply={(text) => {
+                    appendToReport(report.id, text)
+                    setSelectedTemplate(null)
+                  }}
+                />
+              )}
+            </div>
           ))}
         </div>
       </details>
@@ -783,6 +802,7 @@ function ReportCard({
             {incident.history.map((historyItem) => (
               <button
                 type="button"
+                className="history-item-button"
                 onClick={() => appendToReport(report.id, historyItem)}
                 key={historyItem}
               >
@@ -793,16 +813,6 @@ function ReportCard({
         </details>
       )}
 
-      {selectedTemplate && (
-        <TemplateEditor
-          template={selectedTemplate}
-          onCancel={() => setSelectedTemplate(null)}
-          onApply={(text) => {
-            appendToReport(report.id, text)
-            setSelectedTemplate(null)
-          }}
-        />
-      )}
 
       <div className="report-actions">
         <button type="button" className="secondary-button" onClick={copyReport}>
