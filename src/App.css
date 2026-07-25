@@ -717,3 +717,140 @@ select:focus {
     grid-column: auto;
   }
 }
+
+.hero-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(112px, 1fr));
+  gap: 9px;
+  flex: 0 0 auto;
+}
+
+.import-button {
+  min-width: 118px;
+  padding: 12px 14px;
+  color: #dbeafe;
+  background: rgba(37, 99, 235, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.48);
+  border-radius: 14px;
+  font-weight: 800;
+}
+
+.import-button small {
+  display: block;
+  margin-top: 3px;
+  color: #93c5fd;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.import-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.import-dialog {
+  width: min(100%, 760px);
+  max-height: calc(100vh - 36px);
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.import-dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 14px;
+}
+
+.import-dialog-heading p:last-child {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.dialog-close-button {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  color: #dbeafe;
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+.import-textarea {
+  min-height: 360px;
+  resize: vertical;
+  font-family: "Noto Sans KR", system-ui, sans-serif;
+  line-height: 1.62;
+}
+
+.import-help {
+  display: grid;
+  gap: 5px;
+  margin-top: 11px;
+  padding: 12px 13px;
+  color: var(--muted);
+  background: #0b1220;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.import-help strong {
+  color: #dbeafe;
+}
+
+.import-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .hero-card {
+    flex-direction: column;
+  }
+
+  .hero-actions {
+    width: 100%;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .import-button,
+  .reset-button {
+    min-width: 0;
+  }
+
+  .import-backdrop {
+    align-items: end;
+    padding: 9px;
+  }
+
+  .import-dialog {
+    max-height: calc(100vh - 18px);
+    padding: 16px;
+    border-radius: 19px;
+  }
+
+  .import-textarea {
+    min-height: 310px;
+  }
+
+  .import-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}

@@ -46,6 +46,7 @@ const createIncident = (id = createId()) => ({
   },
   reports: [createReport()],
   history: [],
+  usedQuickTemplateIds: [],
   endEnabled: false,
   requestAnalysis: false,
   situationEnd: false,
@@ -83,6 +84,14 @@ const normalizeState = (raw) => {
           }))
         : [createReport()],
     history: Array.isArray(incident.history) ? incident.history : [],
+    usedQuickTemplateIds: Array.isArray(incident.usedQuickTemplateIds)
+      ? incident.usedQuickTemplateIds
+      : inferQuickTemplateIds([
+          ...(Array.isArray(incident.history) ? incident.history : []),
+          ...(Array.isArray(incident.reports)
+            ? incident.reports.map((report) => report.content)
+            : []),
+        ]),
   }))
 
   while (incidents.length < 3) incidents.push(createIncident())
@@ -183,36 +192,72 @@ const GENERAL_TEMPLATES = [
   },
   {
     id: 'valve-block',
-    label: 'Valve 차단 (실시/후 확인 시 (특이사항 없음/[]))',
+    label: 'Valve 차단 (실시/완료/후 확인 시 [])',
     fields: [
       {
         key: 'timing',
         label: '차단 상태',
         type: 'select',
-        options: ['실시', '후 확인 시'],
-      },
-      {
-        key: 'resultType',
-        label: '확인 결과',
-        type: 'select',
-        options: ['특이사항 없음', '직접 입력'],
-        showWhen: (values) => values.timing === '후 확인 시',
+        options: ['실시', '완료', '후 확인 시'],
       },
       {
         key: 'result',
-        label: '확인 결과 직접 입력',
+        label: '확인 결과',
         type: 'text',
-        placeholder: '확인 결과 입력',
-        showWhen: (values) =>
-          values.timing === '후 확인 시' && values.resultType === '직접 입력',
+        placeholder: '예: 특이사항 없음',
+        showWhen: (values) => values.timing === '후 확인 시',
       },
     ],
-    build: (values) => {
-      if (values.timing === '실시') return 'Valve 차단 실시'
-      const result =
-        values.resultType === '직접 입력' ? values.result : '특이사항 없음'
-      return `Valve 차단 후 확인 시 ${result}`
-    },
+    build: (values) =>
+      values.timing === '후 확인 시'
+        ? `Valve 차단 후 확인 시 ${values.result}`
+        : `Valve 차단 ${values.timing}`,
+  },
+  {
+    id: 'torque-check',
+    label: 'Torque값 확인 시 [] N.m 확인 ( 기준값: [] N.m )',
+    fields: [
+      {
+        key: 'measuredTorque',
+        label: '확인 Torque값',
+        type: 'text',
+        placeholder: '예: 30',
+      },
+      {
+        key: 'standardTorque',
+        label: '기준값',
+        type: 'text',
+        placeholder: '예: 43',
+      },
+    ],
+    build: (values) =>
+      `Torque값 확인 시 ${values.measuredTorque} N.m 확인 ( 기준값: ${values.standardTorque} N.m )`,
+  },
+  {
+    id: 'additional-tightening',
+    label: '추가 증가 조임 (실시/완료) ( [] N.m → [] N.m )',
+    fields: [
+      {
+        key: 'status',
+        label: '작업 상태',
+        type: 'select',
+        options: ['실시', '완료'],
+      },
+      {
+        key: 'beforeTorque',
+        label: '조임 전 Torque값',
+        type: 'text',
+        placeholder: '예: 30',
+      },
+      {
+        key: 'afterTorque',
+        label: '조임 후 Torque값',
+        type: 'text',
+        placeholder: '예: 43',
+      },
+    ],
+    build: (values) =>
+      `추가 증가 조임 ${values.status} ( ${values.beforeTorque} N.m → ${values.afterTorque} N.m )`,
   },
   {
     id: 'environment-clear',
@@ -315,13 +360,43 @@ const getDefaultValues = (template) => {
   return values
 }
 
-const getVisibleTemplates = (gasAlarm) => {
-  if (!gasAlarm) return GENERAL_TEMPLATES
-  return [
-    ...GENERAL_TEMPLATES.slice(0, 4),
-    ...GAS_TEMPLATES,
-    ...GENERAL_TEMPLATES.slice(4),
-  ]
+const QUICK_ONCE_TEMPLATE_IDS = [
+  'control-line',
+  'unknown-liquid',
+  'ppe-check',
+  'ppe-entry',
+]
+
+function inferQuickTemplateIds(texts) {
+  const lines = uniqueLines(texts)
+  const used = new Set()
+
+  lines.forEach((line) => {
+    if (line === '통제라인 구축') used.add('control-line')
+    if (/^미상의 액상 (고임|맺힘) 확인$/.test(line)) used.add('unknown-liquid')
+    if (line === '보호구 착용 후 확인 예정') used.add('ppe-check')
+    if (/^보호구 [ABCD]등급 착용 후 현장 진입 실시$/.test(line)) {
+      used.add('ppe-entry')
+    }
+  })
+
+  return QUICK_ONCE_TEMPLATE_IDS.filter((id) => used.has(id))
+}
+
+const getVisibleTemplates = (incident) => {
+  const baseTemplates = incident.gasAlarm
+    ? [
+        ...GENERAL_TEMPLATES.slice(0, 4),
+        ...GAS_TEMPLATES,
+        ...GENERAL_TEMPLATES.slice(4),
+      ]
+    : GENERAL_TEMPLATES
+
+  const usedIds = new Set(incident.usedQuickTemplateIds || [])
+  return baseTemplates.filter(
+    (template) =>
+      !QUICK_ONCE_TEMPLATE_IDS.includes(template.id) || !usedIds.has(template.id),
+  )
 }
 
 const appendLine = (original, text) => {
@@ -389,6 +464,260 @@ const buildPatientLines = (incident) => {
   lines.push(...details)
   return lines
 }
+
+const parsePropertyText = (text) => {
+  const parts = String(text || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+
+  let ph = ''
+  let leakAmount = ''
+  let leakRate = ''
+  const remaining = []
+
+  parts.forEach((part) => {
+    const phMatch = part.match(/^pH\s*[:=]?\s*(.*)$/i)
+    if (phMatch) {
+      ph = phMatch[1].trim()
+      return
+    }
+
+    const amountMatch = part.match(/^Leak\s*량\s*[:=]?\s*(.*)$/i)
+    if (amountMatch) {
+      leakAmount = amountMatch[1].trim()
+      return
+    }
+
+    const rateMatch = part.match(/^Leak\s*속도\s*[:=]?\s*(.*)$/i)
+    if (rateMatch) {
+      leakRate = rateMatch[1].trim()
+      return
+    }
+
+    remaining.push(part)
+  })
+
+  remaining.forEach((part) => {
+    if (!leakRate && /(초당|분당|시간당|방울|속도|흐름)/i.test(part)) {
+      leakRate = part
+    } else if (!leakAmount) {
+      leakAmount = part
+    } else if (!leakRate) {
+      leakRate = part
+    } else {
+      leakRate = `${leakRate}, ${part}`
+    }
+  })
+
+  return { ph, leakAmount, leakRate }
+}
+
+const parseGasPhenomenon = (phenomenon) => {
+  const original = String(phenomenon || '').trim()
+  const isGasAlarm = /(Alarm|알람)/i.test(original)
+  if (!isGasAlarm) return { gasAlarm: false, gasDraft: null }
+
+  const normalized = original.replace(/\s+/g, ' ').trim()
+  const match = normalized.match(
+    /^(환경감지기|(.+?)호기)\s+(.+?)\s+([ABCD])급\s+(.+?)\s*(ppm|ppb|%LEL)\s*(?:Alarm|알람)(?:\s*발생)?(?:\s*외\s*(\d+)\s*건\s*발생)?/i,
+  )
+
+  if (!match) return { gasAlarm: true, gasDraft: null }
+
+  return {
+    gasAlarm: true,
+    gasDraft: {
+      mode: match[7] ? 'multiple' : 'single',
+      sourceType: match[1] === '환경감지기' ? 'environment' : 'unit',
+      unitNo: match[1] === '환경감지기' ? '' : String(match[2] || '').trim().toUpperCase(),
+      target: String(match[3] || '').trim(),
+      grade: String(match[4] || 'A').toUpperCase(),
+      value: String(match[5] || '').trim(),
+      unit: match[6] || 'ppm',
+      extraCount: String(match[7] || '').trim(),
+    },
+  }
+}
+
+const parseImportedReport = (rawText, incidentId) => {
+  const text = String(rawText || '').replace(/\r\n?/g, '\n').trim()
+  const lines = text.split('\n')
+  const parsed = {
+    title: '',
+    phenomenon: '',
+    property: '',
+    patient: '',
+    work: '',
+    responses: [],
+    requestAnalysis: false,
+    situationEnd: false,
+  }
+
+  let section = ''
+  let currentResponseIndex = -1
+
+  const appendSection = (key, value) => {
+    const clean = String(value || '').trimEnd()
+    if (!clean.trim()) return
+    parsed[key] = parsed[key] ? `${parsed[key]}\n${clean}` : clean
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trimEnd()
+    const trimmed = line.trim()
+    if (!trimmed) return
+
+    const titleMatch = trimmed.match(/^\[([^\]]+)\]$/)
+    if (titleMatch && !parsed.title) {
+      parsed.title = titleMatch[1].trim()
+      section = ''
+      return
+    }
+
+    if (/원인분석\s*및\s*재발방지대책\s*요청하겠습니다\.?/.test(trimmed)) {
+      parsed.requestAnalysis = true
+      section = ''
+      return
+    }
+
+    if (/상황\s*종료합니다\.?/.test(trimmed.replace(/^\*\*/, ''))) {
+      parsed.situationEnd = true
+      section = ''
+      return
+    }
+
+    const commonMatch = trimmed.match(/^[-–]?\.\s*(현상|성상|환자\s*여부|작업사항)\s*:\s*(.*)$/)
+    if (commonMatch) {
+      const label = commonMatch[1].replace(/\s+/g, '')
+      section =
+        label === '현상'
+          ? 'phenomenon'
+          : label === '성상'
+            ? 'property'
+            : label === '환자여부'
+              ? 'patient'
+              : 'work'
+      appendSection(section, commonMatch[2])
+      currentResponseIndex = -1
+      return
+    }
+
+    if (/^[-–]?\.\s*대응\s*내용\s*$/.test(trimmed)) {
+      section = 'responses'
+      currentResponseIndex = -1
+      return
+    }
+
+    if (section === 'responses') {
+      const responseMatch = trimmed.match(/^\d+\.\s*(.*)$/)
+      if (responseMatch) {
+        const response = responseMatch[1].trim()
+        if (response) {
+          parsed.responses.push(response)
+          currentResponseIndex = parsed.responses.length - 1
+        }
+        return
+      }
+
+      if (currentResponseIndex >= 0) {
+        parsed.responses[currentResponseIndex] = `${parsed.responses[currentResponseIndex]}\n${trimmed}`
+      }
+      return
+    }
+
+    if (['phenomenon', 'property', 'patient', 'work'].includes(section)) {
+      appendSection(section, line)
+    }
+  })
+
+  const property = parsePropertyText(parsed.property)
+  const patientText = parsed.patient.trim()
+  const patientLines = patientText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const patientHeadline = patientLines[0] || ''
+  const noContact = /접촉자\s*없음|환자\s*없음/.test(patientText)
+  const inhalationMatch = patientText.match(/흡입환자\s*(\d+)\s*명/)
+  const contactMatch = patientText.match(/접촉환자\s*(\d+)\s*명/)
+  const patientDetails = noContact
+    ? patientLines.slice(1).join('\n')
+    : inhalationMatch || contactMatch
+      ? patientLines.slice(1).join('\n')
+      : patientLines.join('\n')
+
+  const workText = parsed.work.trim()
+  const workNone = !workText || /^없음\.?$/.test(workText)
+  const gasResult = parseGasPhenomenon(parsed.phenomenon)
+  const responseItems = parsed.responses.filter((item) => String(item || '').trim())
+  const history = uniqueLines(responseItems)
+
+  const incident = {
+    ...createIncident(incidentId),
+    id: incidentId,
+    title: parsed.title.toUpperCase(),
+    phenomenon: parsed.phenomenon,
+    includePhenomenon: Boolean(parsed.phenomenon.trim()),
+    ph: property.ph,
+    leakAmount: property.leakAmount,
+    leakRate: property.leakRate,
+    includeProperty: Boolean(parsed.property.trim()),
+    includePatient: Boolean(patientText),
+    noContact,
+    inhalationCount: inhalationMatch ? inhalationMatch[1] : '',
+    contactCount: contactMatch ? contactMatch[1] : '',
+    patientDetails,
+    workDetails: workNone ? '' : workText,
+    workNone,
+    includeWork: Boolean(workText),
+    gasAlarm: gasResult.gasAlarm,
+    gasDraft: gasResult.gasDraft || createIncident().gasDraft,
+    reports: responseItems.length
+      ? responseItems.map((content) => ({ ...createReport(), content, included: true }))
+      : [createReport()],
+    history,
+    usedQuickTemplateIds: inferQuickTemplateIds(responseItems),
+    endEnabled: parsed.requestAnalysis || parsed.situationEnd,
+    requestAnalysis: parsed.requestAnalysis,
+    situationEnd: parsed.situationEnd,
+  }
+
+  const recognizedCount = [
+    parsed.title,
+    parsed.phenomenon,
+    parsed.property,
+    parsed.patient,
+    parsed.work,
+    ...responseItems,
+    parsed.requestAnalysis ? 'request' : '',
+    parsed.situationEnd ? 'end' : '',
+  ].filter(Boolean).length
+
+  return {
+    incident,
+    recognizedCount,
+    responseCount: responseItems.length,
+    gasAlarm: gasResult.gasAlarm,
+  }
+}
+
+const hasIncidentContent = (incident) =>
+  Boolean(
+    String(incident.title || '').trim() ||
+      String(incident.phenomenon || '').trim() ||
+      String(incident.ph || '').trim() ||
+      String(incident.leakAmount || '').trim() ||
+      String(incident.leakRate || '').trim() ||
+      String(incident.inhalationCount || '').trim() ||
+      String(incident.contactCount || '').trim() ||
+      String(incident.patientDetails || '').trim() ||
+      String(incident.workDetails || '').trim() ||
+      incident.gasAlarm ||
+      incident.endEnabled ||
+      incident.history.length ||
+      incident.reports.some((report) => String(report.content || '').trim()),
+  )
 
 const buildFinalText = (incident) => {
   const title = incident.title.trim() || '출동 위치'
@@ -719,12 +1048,15 @@ function ReportCard({
   notify,
 }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null)
-  const visibleTemplates = getVisibleTemplates(incident.gasAlarm)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const visibleTemplates = getVisibleTemplates(incident)
   const title = incident.title.trim() || '출동 위치'
 
   const selectTemplate = (template) => {
     if (!template.fields?.length) {
-      appendToReport(report.id, template.build({}))
+      appendToReport(report.id, template.build({}), template.id)
+      setSelectedTemplate(null)
+      setTemplatesOpen(false)
       return
     }
     setSelectedTemplate(template)
@@ -768,7 +1100,11 @@ function ReportCard({
         onBlur={() => syncHistory(report.content)}
       />
 
-      <details className="picker-panel">
+      <details
+        className="picker-panel"
+        open={templatesOpen}
+        onToggle={(event) => setTemplatesOpen(event.currentTarget.open)}
+      >
         <summary>자주 쓰는 대응 문구</summary>
         <div className="template-list">
           {visibleTemplates.map((template) => (
@@ -790,8 +1126,9 @@ function ReportCard({
                   template={selectedTemplate}
                   onCancel={() => setSelectedTemplate(null)}
                   onApply={(text) => {
-                    appendToReport(report.id, text)
+                    appendToReport(report.id, text, selectedTemplate.id)
                     setSelectedTemplate(null)
+                    setTemplatesOpen(false)
                   }}
                 />
               )}
@@ -828,6 +1165,54 @@ function ReportCard({
   )
 }
 
+function ImportDialog({ value, onChange, onApply, onClose }) {
+  return (
+    <div className="import-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="import-dialog card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="import-dialog-heading">
+          <div>
+            <p className="section-index">LOAD REPORT</p>
+            <h2 id="import-dialog-title">대응 정리 불러오기</h2>
+            <p>기존 대응 정리 전체를 붙여넣으면 현재 출동에 자동 적용합니다.</p>
+          </div>
+          <button type="button" className="dialog-close-button" onClick={onClose}>
+            ×
+          </button>
+        </div>
+
+        <textarea
+          className="import-textarea"
+          value={value}
+          autoFocus
+          placeholder={`[출동 위치]\n-. 현상: ...\n-. 성상: ...\n-. 환자 여부: ...\n-. 작업사항: ...\n\n-. 대응 내용\n1. ...\n2. ...\n\n-. 원인분석 및 재발방지대책 요청하겠습니다.\n**상황 종료합니다.`}
+          onChange={(event) => onChange(event.target.value)}
+        />
+
+        <div className="import-help">
+          <strong>자동 인식 항목</strong>
+          <span>제목·현상·성상·환자·작업사항·중간보고·사용 이력·종료 문구</span>
+          <span>현상에 Alarm 또는 알람이 있으면 Gas Alarm 형식도 자동 복원합니다.</span>
+        </div>
+
+        <div className="import-dialog-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            취소
+          </button>
+          <button type="button" className="primary-button" onClick={onApply}>
+            현재 출동에 적용
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function App() {
   const [state, setState] = useState(() => {
     try {
@@ -838,6 +1223,8 @@ function App() {
     }
   })
   const [toast, setToast] = useState('')
+  const [importOpen, setImportOpen] = useState(false)
+  const [importText, setImportText] = useState('')
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
@@ -893,6 +1280,35 @@ function App() {
     updateCurrent((incident) => createIncident(incident.id))
   }
 
+  const applyImport = () => {
+    if (!String(importText || '').trim()) {
+      window.alert('불러올 대응 정리 내용을 붙여넣어 주세요.')
+      return
+    }
+
+    const parsed = parseImportedReport(importText, activeIncident.id)
+    if (!parsed.recognizedCount) {
+      window.alert('인식할 수 있는 보고서 항목이 없습니다. 대응 정리 형식을 확인해 주세요.')
+      return
+    }
+
+    if (
+      hasIncidentContent(activeIncident) &&
+      !window.confirm('현재 출동에 작성된 내용이 있습니다. 불러온 내용으로 덮어쓸까요?')
+    ) {
+      return
+    }
+
+    updateCurrent(() => parsed.incident)
+    setImportOpen(false)
+    setImportText('')
+    notify(
+      parsed.gasAlarm
+        ? `Gas Alarm 보고와 중간보고 ${parsed.responseCount}건을 불러왔습니다.`
+        : `보고서와 중간보고 ${parsed.responseCount}건을 불러왔습니다.`,
+    )
+  }
+
   const updateReport = (reportId, patch) => {
     updateCurrent((incident) => ({
       ...incident,
@@ -929,17 +1345,28 @@ function App() {
       nextHistory.unshift(line)
     })
 
+    const inferredQuickIds = inferQuickTemplateIds(lines)
+
     return {
       ...incident,
       history: nextHistory.slice(0, 60),
+      usedQuickTemplateIds: Array.from(
+        new Set([...(incident.usedQuickTemplateIds || []), ...inferredQuickIds]),
+      ),
     }
   }
 
-  const appendToReport = (reportId, text) => {
+  const appendToReport = (reportId, text, templateId = '') => {
     updateCurrent((incident) => {
       const withHistory = addHistoryItems(incident, text)
+      const shouldHideTemplate = QUICK_ONCE_TEMPLATE_IDS.includes(templateId)
+      const usedQuickTemplateIds = shouldHideTemplate
+        ? Array.from(new Set([...(withHistory.usedQuickTemplateIds || []), templateId]))
+        : withHistory.usedQuickTemplateIds || []
+
       return {
         ...withHistory,
+        usedQuickTemplateIds,
         reports: withHistory.reports.map((report) =>
           report.id === reportId
             ? { ...report, content: appendLine(report.content, text) }
@@ -971,10 +1398,20 @@ function App() {
           <h1>출동 대응 보고 작성</h1>
           <p>작성 내용은 현재 기기에 자동 저장됩니다.</p>
         </div>
-        <button type="button" className="reset-button" onClick={resetCurrent}>
-          전체 초기화
-          <small>현재 출동만</small>
-        </button>
+        <div className="hero-actions">
+          <button
+            type="button"
+            className="import-button"
+            onClick={() => setImportOpen(true)}
+          >
+            불러오기
+            <small>현재 출동에 적용</small>
+          </button>
+          <button type="button" className="reset-button" onClick={resetCurrent}>
+            전체 초기화
+            <small>현재 출동만</small>
+          </button>
+        </div>
       </header>
 
       <section className="incident-tabs-card card">
@@ -1320,6 +1757,18 @@ function App() {
           </button>
         </section>
       </main>
+
+      {importOpen && (
+        <ImportDialog
+          value={importText}
+          onChange={setImportText}
+          onApply={applyImport}
+          onClose={() => {
+            setImportOpen(false)
+            setImportText('')
+          }}
+        />
+      )}
 
       {toast && <div className="toast">{toast}</div>}
     </div>
