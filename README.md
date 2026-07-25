@@ -1,16 +1,64 @@
-# React + Vite
+# ERT 출동 대응 V2
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+지금까지 확정된 최신 요구사항만 반영해 새로 구성한 React + Vite 프로젝트입니다.
 
-Currently, two official plugins are available:
+## 실행
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```powershell
+npm install
+npm run dev
+```
 
-## React Compiler
+## 배포용 빌드
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```powershell
+npm run build
+```
 
-## Expanding the Oxlint configuration
+## 주요 기능
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+- 출동 슬롯 기본 3개, 추가 및 최소 3개까지 자유 삭제
+- 출동별 독립 자동저장과 현재 출동만 전체 초기화
+- 제목 영문 자동 대문자 변환
+- 현상·성상·환자 여부·작업사항 최종 포함 체크
+- 성상 pH·Leak량·Leak속도 3개 독립 입력
+- 흡입환자·접촉환자 수와 다중행 환자 상세정보
+- Gas Alarm 단발·다발 현상 자동작성
+- Gas Alarm 전용 대응 문구 5개
+- 한 중간보고에 대응 문구 여러 개 누적 추가
+- 같은 출동 사용 이력 저장·재사용
+- 최종 대응 정리에서 중복 문장 제거
+- 종료 문구 선택 및 전체 복사
+
+## 대응 정리 불러오기
+
+상단의 `불러오기` 버튼에서 기존 대응 정리 전체를 붙여넣으면 현재 출동 슬롯에 자동 적용됩니다.
+
+- 제목, 현상, 성상, 환자 여부, 작업사항 자동 분리
+- 번호가 붙은 대응 내용은 각각 독립 중간보고로 생성
+- 불러온 대응 내용은 같은 출동 사용 이력에도 추가
+- 원인분석 및 상황 종료 문구 자동 복원
+- 현상에 `Alarm` 또는 `알람`이 있으면 Gas Alarm 자동 체크
+- 표준 Gas Alarm 문장은 단발/다발, 호기/환경감지기, 대상, 등급, 수치, 단위, 추가 건수까지 복원
+- 일부 항목이 인식되지 않아도 현상 원문은 그대로 보존
+
+## PWA 설치 및 오프라인 사용
+
+이 버전은 Chrome/Edge에서 설치 가능한 PWA로 구성되어 있습니다.
+
+1. Vercel 등에 HTTPS로 배포합니다.
+2. Chrome에서 배포 주소를 엽니다.
+3. 주소창의 설치 아이콘 또는 메뉴의 `앱 설치`를 선택합니다.
+4. 온라인 상태에서 앱을 한 번 완전히 연 뒤에는 오프라인에서도 다시 실행할 수 있습니다.
+
+### 업데이트
+
+새 코드를 배포하면 앱을 다음에 온라인으로 열거나 화면으로 복귀할 때 업데이트를 확인합니다. 새 서비스 워커가 발견되면 새 버전으로 전환하며 화면이 한 번 자동 새로고침될 수 있습니다. 입력 데이터는 localStorage에 저장되므로 일반적인 코드 업데이트와 새로고침으로 삭제되지 않습니다.
+
+서비스 워커 캐시 구성을 크게 바꿀 때는 `public/sw.js`의 `APP_VERSION`도 증가시키는 것이 좋습니다.
+
+### 아이콘
+
+- 일반 아이콘은 둥근 사각형 바깥쪽이 투명합니다.
+- Android용 maskable 아이콘은 전체 배경을 어두운 남색으로 채워 흰색 모서리가 보이지 않습니다.
+- 미리보기: 프로젝트 루트의 `icon-preview.png`

@@ -1,0 +1,11 @@
+ERT출동보고 아이콘 적용 안내
+
+1. 이 압축 안의 public, src, index.html, package.json, vite.config.js를 기존 V2 프로젝트 최상위 폴더에 덮어씁니다.
+2. 기존 favicon.svg, icons.svg 파일은 index.html에서 더 이상 참조하지 않으므로 남아 있어도 작동에는 영향이 없습니다.
+3. 깔끔하게 정리하려면 기존 프로젝트에 있는 favicon.svg, icons.svg를 삭제해도 됩니다.
+4. 배포 후 PC Chrome에서 Ctrl+F5로 강력 새로고침합니다.
+5. 기존에 앱을 설치했다면 아이콘/앱 이름 변경이 늦게 반영될 수 있으므로, 기존 앱을 삭제한 뒤 Chrome에서 다시 설치하면 가장 확실합니다.
+
+브라우저 탭 제목: ERT출동보고
+설치 앱 이름: ERT출동보고
+브라우저 favicon: 새 ERT 출동보고 아이콘
