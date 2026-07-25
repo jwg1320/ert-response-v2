@@ -21,7 +21,9 @@ const createIncident = (id = createId()) => ({
   title: '',
   phenomenon: '',
   includePhenomenon: true,
-  property: '',
+  ph: '',
+  leakAmount: '',
+  leakRate: '',
   includeProperty: true,
   includePatient: true,
   noContact: true,
@@ -391,7 +393,19 @@ const buildFinalText = (incident) => {
     commonLines.push(...formatMultilineField('현상', incident.phenomenon))
   }
   if (incident.includeProperty) {
-    commonLines.push(...formatMultilineField('성상', incident.property))
+    const propertyParts = []
+    if (String(incident.ph || '').trim()) {
+      propertyParts.push(`pH ${String(incident.ph).trim()}`)
+    }
+    if (String(incident.leakAmount || '').trim()) {
+      propertyParts.push(String(incident.leakAmount).trim())
+    }
+    if (String(incident.leakRate || '').trim()) {
+      propertyParts.push(String(incident.leakRate).trim())
+    }
+    if (propertyParts.length) {
+      commonLines.push(`-. 성상: ${propertyParts.join(', ')}`)
+    }
   }
   commonLines.push(...buildPatientLines(incident))
   if (incident.includeWork) {
@@ -1058,11 +1072,41 @@ function App() {
                   대응 정리에 포함
                 </label>
               </div>
-              <textarea
-                value={activeIncident.property}
-                placeholder="성상을 입력하세요."
-                onChange={(event) => updateCurrent({ property: event.target.value })}
-              />
+              <div className="property-grid">
+                <label className="mini-field">
+                  <span>pH</span>
+                  <input
+                    type="text"
+                    value={activeIncident.ph}
+                    placeholder="예: 3"
+                    onChange={(event) => updateCurrent({ ph: event.target.value })}
+                  />
+                </label>
+
+                <label className="mini-field">
+                  <span>Leak량</span>
+                  <input
+                    type="text"
+                    value={activeIncident.leakAmount}
+                    placeholder="예: 10L"
+                    onChange={(event) =>
+                      updateCurrent({ leakAmount: event.target.value })
+                    }
+                  />
+                </label>
+
+                <label className="mini-field wide-on-mobile">
+                  <span>Leak속도</span>
+                  <input
+                    type="text"
+                    value={activeIncident.leakRate}
+                    placeholder="예: 초당 1방울"
+                    onChange={(event) =>
+                      updateCurrent({ leakRate: event.target.value })
+                    }
+                  />
+                </label>
+              </div>
             </div>
 
             <div className="common-field-block">
@@ -1161,9 +1205,6 @@ function App() {
               <h2>상황별 중간보고</h2>
               <p>문구를 여러 개 선택하면 같은 입력창 아래에 순서대로 누적됩니다.</p>
             </div>
-            <button type="button" className="primary-button" onClick={addReport}>
-              + 중간보고 추가
-            </button>
           </div>
 
           <div className="reports-list">
@@ -1180,6 +1221,14 @@ function App() {
               />
             ))}
           </div>
+
+          <button
+            type="button"
+            className="primary-button add-report-bottom-button"
+            onClick={addReport}
+          >
+            + 중간보고 추가
+          </button>
         </section>
 
         <section className="card summary-card">

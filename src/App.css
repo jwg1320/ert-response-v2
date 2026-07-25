@@ -275,6 +275,29 @@ select:focus {
   font-weight: 800;
 }
 
+
+.property-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mini-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mini-field span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.wide-on-mobile {
+  grid-column: 1 / -1;
+}
+
 .patient-detail-box {
   display: grid;
   gap: 13px;
@@ -391,6 +414,13 @@ select:focus {
 .reports-list {
   display: grid;
   gap: 14px;
+}
+
+.add-report-bottom-button {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  min-height: 50px;
 }
 
 .report-card {
@@ -622,8 +652,7 @@ select:focus {
     align-items: stretch;
   }
 
-  .add-incident-button,
-  .reports-heading .primary-button {
+  .add-incident-button {
     width: 100%;
   }
 
@@ -664,5 +693,16 @@ select:focus {
 
   .end-detail-options {
     padding-left: 0;
+  }
+}
+
+
+@media (min-width: 720px) {
+  .property-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .wide-on-mobile {
+    grid-column: auto;
   }
 }
