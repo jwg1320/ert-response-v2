@@ -1059,7 +1059,11 @@ function ReportCard({
       setTemplatesOpen(false)
       return
     }
-    setSelectedTemplate(template)
+
+    // 이미 열려 있는 같은 문구를 다시 누르면 문구 완성창을 접습니다.
+    setSelectedTemplate((current) =>
+      current?.id === template.id ? null : template,
+    )
   }
 
   const copyReport = async () => {
