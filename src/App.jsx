@@ -31,6 +31,7 @@ const createIncident = (id = createId()) => ({
   contactCount: '',
   patientDetails: '',
   workDetails: '',
+  workNone: true,
   includeWork: true,
   gasAlarm: false,
   gasDraft: {
@@ -65,6 +66,10 @@ const normalizeState = (raw) => {
     ...createIncident(incident.id || createId()),
     ...incident,
     id: incident.id || createId(),
+    workNone:
+      typeof incident.workNone === 'boolean'
+        ? incident.workNone
+        : !String(incident.workDetails || '').trim(),
     gasDraft: {
       ...createIncident().gasDraft,
       ...(incident.gasDraft || {}),
@@ -408,7 +413,7 @@ const buildFinalText = (incident) => {
     }
   }
   commonLines.push(...buildPatientLines(incident))
-  if (incident.includeWork) {
+  if (incident.includeWork && !incident.workNone) {
     commonLines.push(...formatMultilineField('작업사항', incident.workDetails))
   }
 
@@ -1199,11 +1204,23 @@ function App() {
                   대응 정리에 포함
                 </label>
               </div>
-              <textarea
-                value={activeIncident.workDetails}
-                placeholder="작업 내용, 진행사항, 특이사항 등을 자유롭게 입력하세요."
-                onChange={(event) => updateCurrent({ workDetails: event.target.value })}
-              />
+
+              <label className="no-contact-toggle">
+                <input
+                  type="checkbox"
+                  checked={activeIncident.workNone}
+                  onChange={(event) => updateCurrent({ workNone: event.target.checked })}
+                />
+                없음
+              </label>
+
+              {!activeIncident.workNone && (
+                <textarea
+                  value={activeIncident.workDetails}
+                  placeholder="작업 내용, 진행사항, 특이사항 등을 자유롭게 입력하세요."
+                  onChange={(event) => updateCurrent({ workDetails: event.target.value })}
+                />
+              )}
             </div>
           </div>
         </section>
