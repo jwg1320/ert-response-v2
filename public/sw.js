@@ -1,7 +1,7 @@
 /* ERT출동보고 service worker
  * 앱 코드를 배포할 때 이 파일의 APP_VERSION 값도 올리면 캐시 교체가 더 명확해집니다.
  */
-const APP_VERSION = 'ert-report-pwa-8';
+const APP_VERSION = 'ert-report-pwa-15';
 const STATIC_CACHE = `${APP_VERSION}-static`;
 const RUNTIME_CACHE = `${APP_VERSION}-runtime`;
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icons/ert-report-icon-192.png', '/icons/ert-report-icon-512.png', '/icons/ert-report-maskable-192.png', '/icons/ert-report-maskable-512.png', '/icons/ert-report-icon-64.png'];

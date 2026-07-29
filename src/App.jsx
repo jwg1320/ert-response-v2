@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const STORAGE_KEY = 'ert-response-v2-multi-final-v1'
+const PATIENT_TEMPLATE_PREFIX = 'patient-info-'
+const PATIENT_HANDOFF_TEMPLATE_ID = 'patient-fire-team-handoff'
 
 const createId = () => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -412,6 +414,21 @@ const GAS_TEMPLATES = [
   },
 ]
 
+const PATIENT_HANDOFF_TEMPLATE = {
+  id: PATIENT_HANDOFF_TEMPLATE_ID,
+  label: '환자 소방대 인계 (예정/완료)',
+  patientActionTemplate: true,
+  fields: [
+    {
+      key: 'status',
+      label: '인계 상태',
+      type: 'select',
+      options: ['예정', '완료'],
+    },
+  ],
+  build: (values) => `환자 소방대 인계 ${values.status}`,
+}
+
 const getDefaultValues = (template) => {
   const values = {}
   ;(template.fields || []).forEach((field) => {
@@ -422,7 +439,7 @@ const getDefaultValues = (template) => {
 }
 
 
-const ALL_TEMPLATES = [...GENERAL_TEMPLATES, ...GAS_TEMPLATES]
+const ALL_TEMPLATES = [...GENERAL_TEMPLATES, ...GAS_TEMPLATES, PATIENT_HANDOFF_TEMPLATE]
 
 const getTemplateById = (templateId) =>
   ALL_TEMPLATES.find((template) => template.id === templateId)
@@ -464,10 +481,21 @@ const removeManagedTemplateLines = (content, drafts = []) => {
   const lines = String(content || '').split(/\r?\n/)
 
   drafts.forEach((draft) => {
-    const target = String(draft.generatedText || '').trim()
-    if (!target) return
-    const index = lines.findIndex((line) => line.trim() === target)
-    if (index >= 0) lines.splice(index, 1)
+    const targetLines = String(draft.generatedText || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (!targetLines.length) return
+
+    const startIndex = lines.findIndex((_, index) =>
+      targetLines.every(
+        (targetLine, offset) =>
+          lines[index + offset] !== undefined &&
+          lines[index + offset].trim() === targetLine,
+      ),
+    )
+
+    if (startIndex >= 0) lines.splice(startIndex, targetLines.length)
   })
 
   while (lines.length && !lines[0].trim()) lines.shift()
@@ -488,6 +516,73 @@ const rebuildReportContentFromDrafts = (
   return [...generatedLines, ...manualLines].join('\n')
 }
 
+const synchronizePatientTemplateDrafts = (incident) => {
+  const patientTemplates = getPatientInfoTemplates(incident)
+  const patientTemplateMap = new Map(
+    patientTemplates.map((template) => [template.id, template]),
+  )
+
+  return {
+    ...incident,
+    reports: (incident.reports || []).map((report) => {
+      const previousDrafts = Array.isArray(report.templateDrafts)
+        ? report.templateDrafts
+        : []
+      const seenPatientTemplateIds = new Set()
+      const nextDrafts = []
+
+      previousDrafts.forEach((draft) => {
+        const templateId = String(draft.templateId || '')
+        const isPatientInfoDraft = templateId.startsWith(PATIENT_TEMPLATE_PREFIX)
+        const isPatientHandoffDraft = templateId === PATIENT_HANDOFF_TEMPLATE_ID
+
+        if (!isPatientInfoDraft && !isPatientHandoffDraft) {
+          nextDrafts.push(draft)
+          return
+        }
+
+        const template = patientTemplateMap.get(templateId)
+        if (!template || seenPatientTemplateIds.has(templateId)) return
+        seenPatientTemplateIds.add(templateId)
+
+        const values =
+          draft.values && typeof draft.values === 'object' ? draft.values : {}
+        const generatedText = template.patientTemplate
+          ? template.build({})
+          : formatResponseItemText(buildLiveTemplateText(template, values))
+
+        nextDrafts.push({
+          ...draft,
+          templateId: template.id,
+          values: template.patientTemplate ? {} : values,
+          collapsed: template.patientTemplate ? false : Boolean(draft.collapsed),
+          generatedText,
+        })
+      })
+
+      const changed =
+        previousDrafts.length !== nextDrafts.length ||
+        nextDrafts.some(
+          (draft, index) =>
+            draft.templateId !== previousDrafts[index]?.templateId ||
+            draft.generatedText !== previousDrafts[index]?.generatedText,
+        )
+
+      if (!changed) return report
+
+      return {
+        ...report,
+        templateDrafts: nextDrafts,
+        content: rebuildReportContentFromDrafts(
+          report.content,
+          previousDrafts,
+          nextDrafts,
+        ),
+      }
+    }),
+  }
+}
+
 const QUICK_ONCE_TEMPLATE_IDS = [
   'control-line',
   'unknown-liquid',
@@ -500,10 +595,16 @@ function inferQuickTemplateIds(texts) {
   const used = new Set()
 
   lines.forEach((line) => {
-    if (line === '통제라인 구축') used.add('control-line')
-    if (/^미상의 액상 (고임|맺힘) 확인$/.test(line)) used.add('unknown-liquid')
-    if (line === '보호구 착용 후 확인 예정') used.add('ppe-check')
-    if (/^보호구 [ABCD]등급 착용 후 현장 진입 실시$/.test(line)) {
+    const normalized = String(line || '')
+      .replace(/^-\.\s*/, '')
+      .replace(/^\d+[.)]\s*/, '')
+      .trim()
+    if (normalized === '통제라인 구축') used.add('control-line')
+    if (/^미상의 액상 (고임|맺힘) 확인$/.test(normalized)) {
+      used.add('unknown-liquid')
+    }
+    if (normalized === '보호구 착용 후 확인 예정') used.add('ppe-check')
+    if (/^보호구 [ABCD]등급 착용 후 현장 진입 실시$/.test(normalized)) {
       used.add('ppe-entry')
     }
   })
@@ -564,109 +665,236 @@ const formatMultilineField = (label, text) => {
   return [`-. ${label}: ${lines[0].trim()}`, ...lines.slice(1)]
 }
 
-const buildPatientLines = (incident) => {
-  if (!incident.includePatient) return []
+const formatResponseItemText = (text) => {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (!lines.length) return ''
+  if (/^-\.\s*/.test(lines[0])) return lines.join('\n')
+  return [`-. ${lines[0]}`, ...lines.slice(1)].join('\n')
+}
+
+const maskPatientName = (name) => {
+  const text = String(name || '').trim()
+  if (!text) return ''
+
+  const chars = Array.from(text)
+  const visibleIndexes = chars
+    .map((char, index) => (/\s/.test(char) ? -1 : index))
+    .filter((index) => index >= 0)
+
+  if (visibleIndexes.length <= 1) return text
+
+  if (visibleIndexes.length === 2) {
+    chars[visibleIndexes[1]] = '○'
+    return chars.join('')
+  }
+
+  visibleIndexes.slice(1, -1).forEach((index) => {
+    chars[index] = '○'
+  })
+  return chars.join('')
+}
+
+const buildPatientSummaryLine = (patient, index, type) => {
+  const affiliation = String(patient.affiliation || '').trim()
+  const name = maskPatientName(patient.name)
+  const identity = [affiliation, name].filter(Boolean).join(' ')
+  const contactArea =
+    type === 'contact' ? String(patient.contactArea || '').trim() : ''
+
+  const details = []
+  if (identity) details.push(identity)
+  if (contactArea) details.push(`접촉 부위: ${contactArea}`)
+
+  if (!details.length) return ''
+  return `${index + 1}) ${details.join(' / ')}`
+}
+
+const hasPatientOccurrence = (incident) =>
+  Boolean(
+    incident &&
+      !incident.noContact &&
+      ((Number.parseInt(incident.contactCount, 10) || 0) > 0 ||
+        (Number.parseInt(incident.inhalationCount, 10) || 0) > 0),
+  )
+
+const buildPatientLines = (incident, { respectInclude = true } = {}) => {
+  if (respectInclude && !incident.includePatient) return []
   if (incident.noContact) return ['-. 환자 여부: 접촉자 없음']
 
+  const contactCount = Math.max(0, Number.parseInt(incident.contactCount, 10) || 0)
+  const inhalationCount = Math.max(
+    0,
+    Number.parseInt(incident.inhalationCount, 10) || 0,
+  )
+  const hasContact = contactCount > 0
+  const hasInhalation = inhalationCount > 0
+
   const patientTypes = []
-  if (String(incident.contactCount).trim()) {
-    patientTypes.push(`접촉환자 ${String(incident.contactCount).trim()}명`)
-  }
-  if (String(incident.inhalationCount).trim()) {
-    patientTypes.push(`흡입환자 ${String(incident.inhalationCount).trim()}명`)
-  }
+  if (hasContact) patientTypes.push(`접촉환자 ${contactCount}명`)
+  if (hasInhalation) patientTypes.push(`흡입환자 ${inhalationCount}명`)
 
   const lines = []
   if (patientTypes.length) {
     lines.push(`-. 환자 여부: ${patientTypes.join(' / ')} 발생`)
   }
 
-  resizePatientRecords(incident.contactPatients, incident.contactCount, 'contact').forEach(
-    (patient, index) => {
-      const identity = []
-      if (String(patient.affiliation || '').trim()) {
-        identity.push(`소속 ${String(patient.affiliation).trim()}`)
-      }
-      if (String(patient.name || '').trim()) {
-        identity.push(`이름 ${String(patient.name).trim()}`)
-      }
-      if (identity.length) {
-        lines.push(`접촉환자 ${index + 1}: ${identity.join(' / ')}`)
-      } else if (String(patient.contactArea || '').trim()) {
-        lines.push(`접촉환자 ${index + 1}:`)
-      }
-      if (String(patient.contactArea || '').trim()) {
-        lines.push(`접촉 부위: ${String(patient.contactArea).trim()}`)
-      }
-    },
+  const contactLines = resizePatientRecords(
+    incident.contactPatients,
+    contactCount,
+    'contact',
   )
+    .map((patient, index) => buildPatientSummaryLine(patient, index, 'contact'))
+    .filter(Boolean)
 
-  resizePatientRecords(
+  const inhalationLines = resizePatientRecords(
     incident.inhalationPatients,
-    incident.inhalationCount,
+    inhalationCount,
     'inhalation',
-  ).forEach((patient, index) => {
-    const identity = []
-    if (String(patient.affiliation || '').trim()) {
-      identity.push(`소속 ${String(patient.affiliation).trim()}`)
-    }
-    if (String(patient.name || '').trim()) {
-      identity.push(`이름 ${String(patient.name).trim()}`)
-    }
-    if (identity.length) {
-      lines.push(`흡입환자 ${index + 1}: ${identity.join(' / ')}`)
-    }
-  })
+  )
+    .map((patient, index) => buildPatientSummaryLine(patient, index, 'inhalation'))
+    .filter(Boolean)
+
+  if (hasContact && hasInhalation) {
+    lines.push('접촉환자', ...contactLines, '흡입환자', ...inhalationLines)
+  } else if (hasContact) {
+    lines.push(...contactLines)
+  } else if (hasInhalation) {
+    lines.push(...inhalationLines)
+  }
 
   return lines
 }
 
-const parsePatientRecords = (patientLines, count, type) => {
+const getPatientInfoTemplates = (incident) => {
+  if (!hasPatientOccurrence(incident)) return []
+
+  return [
+    {
+      id: `${PATIENT_TEMPLATE_PREFIX}all`,
+      label: '환자 정보',
+      patientTemplate: true,
+      build: () => buildPatientLines(incident, { respectInclude: false }).join('\n'),
+    },
+    PATIENT_HANDOFF_TEMPLATE,
+  ]
+}
+
+const parsePatientIdentity = (detail) => {
+  const clean = String(detail || '').trim()
+  if (!clean) return { affiliation: '', name: '' }
+
+  const legacyAffiliationMatch = clean.match(/소속\s*(.*?)(?=\s*\/\s*이름|$)/)
+  const legacyNameMatch = clean.match(/이름\s*(.*)$/)
+  if (legacyAffiliationMatch || legacyNameMatch) {
+    return {
+      affiliation: String(legacyAffiliationMatch?.[1] || '').trim(),
+      name: String(legacyNameMatch?.[1] || '').trim(),
+    }
+  }
+
+  const identityPart = clean
+    .split(/\s*\/\s*접촉\s*부위\s*:/)[0]
+    .trim()
+  if (!identityPart) return { affiliation: '', name: '' }
+
+  const tokens = identityPart.split(/\s+/).filter(Boolean)
+  if (tokens.length === 1) {
+    return { affiliation: '', name: tokens[0] }
+  }
+
+  return {
+    affiliation: tokens.slice(0, -1).join(' '),
+    name: tokens[tokens.length - 1],
+  }
+}
+
+const parsePatientRecords = (patientLines, count, type, otherCount = 0) => {
   const records = resizePatientRecords([], count, type)
+  const hasBothTypes =
+    Math.max(0, Number.parseInt(count, 10) || 0) > 0 &&
+    Math.max(0, Number.parseInt(otherCount, 10) || 0) > 0
+  let activeSection = hasBothTypes ? '' : type
   let activeContactIndex = -1
 
   patientLines.forEach((line) => {
     const trimmed = String(line || '').trim()
-    const contactMatch = trimmed.match(/^접촉환자\s*(\d+)\s*[:.]\s*(.*)$/)
-    if (contactMatch && type === 'contact') {
-      const index = Math.max(0, Number.parseInt(contactMatch[1], 10) - 1)
-      const detail = String(contactMatch[2] || '').trim()
-      const affiliationMatch = detail.match(/소속\s*(.*?)(?=\s*\/\s*이름|$)/)
-      const nameMatch = detail.match(/이름\s*(.*)$/)
+    if (!trimmed) return
+
+    if (/^접촉환자$/.test(trimmed)) {
+      activeSection = 'contact'
+      return
+    }
+    if (/^흡입환자$/.test(trimmed)) {
+      activeSection = 'inhalation'
+      return
+    }
+
+    const legacyContactMatch = trimmed.match(/^접촉환자\s*(\d+)\s*[:.]\s*(.*)$/)
+    if (legacyContactMatch && type === 'contact') {
+      const index = Math.max(0, Number.parseInt(legacyContactMatch[1], 10) - 1)
+      const detail = String(legacyContactMatch[2] || '').trim()
+      const identity = parsePatientIdentity(detail)
       if (records[index]) {
         records[index] = {
           ...records[index],
-          affiliation: String(affiliationMatch?.[1] || '').trim(),
-          name: String(nameMatch?.[1] || '').trim(),
+          ...identity,
         }
         activeContactIndex = index
       }
       return
     }
 
-    const inhalationMatch = trimmed.match(/^흡입환자\s*(\d+)\s*[:.]\s*(.*)$/)
-    if (inhalationMatch && type === 'inhalation') {
-      const index = Math.max(0, Number.parseInt(inhalationMatch[1], 10) - 1)
-      const detail = String(inhalationMatch[2] || '').trim()
-      const affiliationMatch = detail.match(/소속\s*(.*?)(?=\s*\/\s*이름|$)/)
-      const nameMatch = detail.match(/이름\s*(.*)$/)
+    const legacyInhalationMatch = trimmed.match(
+      /^흡입환자\s*(\d+)\s*[:.]\s*(.*)$/,
+    )
+    if (legacyInhalationMatch && type === 'inhalation') {
+      const index = Math.max(
+        0,
+        Number.parseInt(legacyInhalationMatch[1], 10) - 1,
+      )
+      const identity = parsePatientIdentity(legacyInhalationMatch[2])
       if (records[index]) {
         records[index] = {
           ...records[index],
-          affiliation: String(affiliationMatch?.[1] || '').trim(),
-          name: String(nameMatch?.[1] || '').trim(),
+          ...identity,
         }
       }
       return
     }
 
-    const contactAreaMatch = trimmed.match(/^접촉\s*부위\s*:\s*(.*)$/)
-    if (contactAreaMatch && type === 'contact' && activeContactIndex >= 0) {
+    const legacyContactAreaMatch = trimmed.match(/^접촉\s*부위\s*:\s*(.*)$/)
+    if (legacyContactAreaMatch && type === 'contact' && activeContactIndex >= 0) {
       records[activeContactIndex] = {
         ...records[activeContactIndex],
-        contactArea: String(contactAreaMatch[1] || '').trim(),
+        contactArea: String(legacyContactAreaMatch[1] || '').trim(),
       }
+      return
     }
+
+    const numberedMatch = trimmed.match(/^(\d+)\s*[.)]\s*(.*)$/)
+    if (!numberedMatch || activeSection !== type) return
+
+    const index = Math.max(0, Number.parseInt(numberedMatch[1], 10) - 1)
+    if (!records[index]) return
+
+    const detail = String(numberedMatch[2] || '').trim()
+    const identity = parsePatientIdentity(detail)
+    records[index] = {
+      ...records[index],
+      ...identity,
+      ...(type === 'contact'
+        ? {
+            contactArea: String(
+              detail.match(/\/\s*접촉\s*부위\s*:\s*(.*)$/)?.[1] || '',
+            ).trim(),
+          }
+        : {}),
+    }
+    if (type === 'contact') activeContactIndex = index
   })
 
   return records
@@ -1012,7 +1240,10 @@ const parseImportedReport = (rawText, incidentId) => {
   })
 
   const property = parsePropertyText(parsed.property)
-  const patientText = parsed.patient.trim()
+  const responseItems = parsed.responses.filter((item) => String(item || '').trim())
+  const patientResponseText =
+    responseItems.find((item) => /^환자\s*여부\s*:/.test(String(item || '').trim())) || ''
+  const patientText = parsed.patient.trim() || patientResponseText
   const patientLines = patientText
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -1023,17 +1254,22 @@ const parseImportedReport = (rawText, incidentId) => {
   const inhalationCount = inhalationMatch ? inhalationMatch[1] : ''
   const contactCount = contactMatch ? contactMatch[1] : ''
   const patientDetailLines = patientLines.slice(1)
-  const contactPatients = parsePatientRecords(patientDetailLines, contactCount, 'contact')
+  const contactPatients = parsePatientRecords(
+    patientDetailLines,
+    contactCount,
+    'contact',
+    inhalationCount,
+  )
   const inhalationPatients = parsePatientRecords(
     patientDetailLines,
     inhalationCount,
     'inhalation',
+    contactCount,
   )
 
   const workText = parsed.work.trim()
   const workNone = !workText || /^없음\.?$/.test(workText)
   const gasResult = parseGasPhenomenon(parsed.phenomenon)
-  const responseItems = parsed.responses.filter((item) => String(item || '').trim())
   const history = uniqueLines(responseItems)
 
   const incident = {
@@ -1058,7 +1294,11 @@ const parseImportedReport = (rawText, incidentId) => {
     gasAlarm: gasResult.gasAlarm,
     gasDraft: gasResult.gasDraft || createIncident().gasDraft,
     reports: responseItems.length
-      ? responseItems.map((content) => ({ ...createReport(), content, included: true }))
+      ? responseItems.map((content) => ({
+          ...createReport(),
+          content: formatResponseItemText(content),
+          included: true,
+        }))
       : [createReport()],
     history,
     usedQuickTemplateIds: inferQuickTemplateIds(responseItems),
@@ -1084,6 +1324,99 @@ const parseImportedReport = (rawText, incidentId) => {
     responseCount: responseItems.length,
     gasAlarm: gasResult.gasAlarm,
   }
+}
+
+const isPatientResponseHeading = (text) => /^환자 여부\s*:/.test(text)
+
+const normalizePatientChildLine = (line) => {
+  const trimmed = String(line || '').trim()
+  if (!trimmed) return ''
+  if (/^(접촉환자|흡입환자)$/.test(trimmed)) return trimmed
+
+  const numbered = trimmed.match(/^(\d+)[.)]\s*(.+)$/)
+  if (numbered) return `${numbered[1]}) ${numbered[2].trim()}`
+  return ''
+}
+
+const buildResponseItems = (texts) => {
+  const items = []
+  let current = null
+
+  texts.forEach((text) => {
+    String(text || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .forEach((line) => {
+        const marked = /^-\.\s*/.test(line)
+        if (marked) {
+          const itemText = line.replace(/^-\.\s*/, '').trim()
+          if (!itemText) return
+          current = { text: itemText, children: [] }
+          items.push(current)
+          return
+        }
+
+        if (current && isPatientResponseHeading(current.text)) {
+          const child = normalizePatientChildLine(line)
+          if (child) {
+            current.children.push(child)
+            return
+          }
+        }
+
+        const legacyText = line.replace(/^\d+\.\s*/, '').trim()
+        if (!legacyText) return
+        current = { text: legacyText, children: [] }
+        items.push(current)
+      })
+  })
+
+  const seen = new Set()
+  return items.filter((item) => {
+    const signature = JSON.stringify([item.text, item.children])
+    if (seen.has(signature)) return false
+    seen.add(signature)
+    return true
+  })
+}
+
+const normalizeFinalResponseText = (text) => {
+  const normalized = String(text || '').trim()
+  if (!normalized) return ''
+
+  // 현장 진입 전 준비 문구는 중간보고 전용이므로 최종 대응 내용에서는 제외합니다.
+  if (/^보호구\s*착용\s*후\s*확인\s*예정[.!]?$/i.test(normalized)) {
+    return ''
+  }
+
+  // 제수 작업은 최종 대응 정리에서 진행 상태와 관계없이 완료 문구로 고정합니다.
+  return normalized.replace(
+    /^(.*?오염부\s*제거\s*및\s*제수\s*작업)\s*(?:실시|완료)[.!]?$/i,
+    '$1 완료',
+  )
+}
+
+const normalizeFinalResponseItems = (items) => {
+  const seen = new Set()
+  const result = []
+
+  items.forEach((item) => {
+    const text = normalizeFinalResponseText(item?.text)
+    if (!text) return
+
+    const normalizedItem = {
+      ...item,
+      text,
+      children: Array.isArray(item?.children) ? item.children : [],
+    }
+    const signature = JSON.stringify([normalizedItem.text, normalizedItem.children])
+    if (seen.has(signature)) return
+    seen.add(signature)
+    result.push(normalizedItem)
+  })
+
+  return result
 }
 
 const hasIncidentContent = (incident) =>
@@ -1114,6 +1447,11 @@ const hasIncidentContent = (incident) =>
 
 const buildFinalText = (incident) => {
   const title = incident.title.trim() || '출동 위치'
+  const responseItems = normalizeFinalResponseItems(
+    buildResponseItems(
+      incident.reports.filter((report) => report.included).map((report) => report.content),
+    ),
+  ).filter((item) => !isPatientResponseHeading(item.text))
   const commonLines = []
 
   if (incident.includePhenomenon) {
@@ -1134,6 +1472,8 @@ const buildFinalText = (incident) => {
       commonLines.push(`-. 성상: ${propertyParts.join(', ')}`)
     }
   }
+  // 환자 정보는 중간보고에 선택되어 있어도 대응 내용이 아닌 공통정보로만 출력합니다.
+  // 실제 최종 포함 여부는 환자 여부 영역의 `대응 정리에 포함` 체크 상태를 따릅니다.
   commonLines.push(...buildPatientLines(incident))
   if (incident.includeWork) {
     if (incident.workNone) {
@@ -1143,17 +1483,16 @@ const buildFinalText = (incident) => {
     }
   }
 
-  const responseLines = uniqueLines(
-    incident.reports.filter((report) => report.included).map((report) => report.content),
-  )
-
   const lines = [`[${title}]`]
   if (commonLines.length) lines.push(...commonLines)
 
-  if (responseLines.length) {
+  if (responseItems.length) {
     if (commonLines.length) lines.push('')
     lines.push('-. 대응 내용')
-    responseLines.forEach((line, index) => lines.push(`${index + 1}. ${line}`))
+    responseItems.forEach((item, index) => {
+      lines.push(`${index + 1}. ${item.text}`)
+      item.children.forEach((child) => lines.push(`   ${child}`))
+    })
   }
 
   const endLines = []
@@ -1506,27 +1845,53 @@ function ReportCard({
 }) {
   const [selectedTemplate, setSelectedTemplate] = useState(null)
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const previousReportCountRef = useRef(incident.reports.length)
+
+  useEffect(() => {
+    const previousCount = previousReportCountRef.current
+    const currentCount = incident.reports.length
+
+    if (currentCount > previousCount) {
+      setTemplatesOpen(false)
+      setSelectedTemplate(null)
+    }
+
+    previousReportCountRef.current = currentCount
+  }, [incident.reports.length])
+
+  const patientTemplates = getPatientInfoTemplates(incident)
   const visibleTemplates = getVisibleTemplates(incident)
+  const allVisibleTemplates = [...patientTemplates, ...visibleTemplates]
   const title = incident.title.trim() || '출동 위치'
   const selectedDrafts = Array.isArray(report.templateDrafts)
     ? report.templateDrafts
     : []
   const selectedIds = new Set(selectedDrafts.map((draft) => draft.templateId))
   const selectedTemplateRows = selectedDrafts
-    .map((draft) => ({ draft, template: getTemplateById(draft.templateId) }))
+    .map((draft) => ({
+      draft,
+      template:
+        allVisibleTemplates.find((template) => template.id === draft.templateId) ||
+        getTemplateById(draft.templateId),
+    }))
     .filter((item) => item.template)
+  const unselectedPatientTemplates = patientTemplates.filter(
+    (template) => !selectedIds.has(template.id),
+  )
   const unselectedTemplates = visibleTemplates.filter(
     (template) => !selectedIds.has(template.id),
   )
 
   const selectTemplate = (template) => {
     if (selectedIds.has(template.id)) {
-      toggleLiveTemplate(report.id, template.id)
+      if ((template.fields || []).length > 0) {
+        toggleLiveTemplate(report.id, template.id)
+      }
       return
     }
 
     if (!template.fields?.length) {
-      appendToReport(report.id, template.build({}), template.id)
+      appendToReport(report.id, formatResponseItemText(template.build({})), template.id)
       setSelectedTemplate(null)
       setTemplatesOpen(false)
       return
@@ -1546,7 +1911,10 @@ ${report.content.trim()}` : ''}`
     notify('개별 중간보고를 복사했습니다.')
   }
 
-  const renderTemplateRow = (template, draft = null, order = 0) => (
+  const renderTemplateRow = (template, draft = null, order = 0) => {
+    const requiresCompletion = (template.fields || []).length > 0
+
+    return (
     <div className={`template-option ${draft ? 'multi-selected' : ''}`} key={template.id}>
       <div className="template-choice-row">
         <label
@@ -1573,14 +1941,23 @@ ${report.content.trim()}` : ''}`
             GAS_TEMPLATES.some((item) => item.id === template.id)
               ? 'gas-template'
               : ''
-          } ${draft ? 'selected-template-button' : ''}`}
+          } ${template.patientTemplate || template.patientActionTemplate ? 'patient-template' : ''} ${
+            draft ? 'selected-template-button' : ''
+          }`}
           onClick={() => selectTemplate(template)}
         >
-          {template.label}
+          {draft && !requiresCompletion ? (
+            <span className="selected-static-template-label">
+              <span className="selection-order-badge">선택 {order}</span>
+              <span>{template.label}</span>
+            </span>
+          ) : (
+            template.label
+          )}
         </button>
       </div>
 
-      {draft && (
+      {draft && requiresCompletion && (
         <LiveTemplateEditor
           template={template}
           draft={draft}
@@ -1597,14 +1974,15 @@ ${report.content.trim()}` : ''}`
           template={selectedTemplate}
           onCancel={() => setSelectedTemplate(null)}
           onApply={(text) => {
-            appendToReport(report.id, text, selectedTemplate.id)
+            appendToReport(report.id, formatResponseItemText(text), selectedTemplate.id)
             setSelectedTemplate(null)
             setTemplatesOpen(false)
           }}
         />
       )}
     </div>
-  )
+    )
+  }
 
   return (
     <article className="card report-card">
@@ -1645,7 +2023,7 @@ ${report.content.trim()}` : ''}`
         <summary>자주 쓰는 대응 문구</summary>
         <div className="template-multi-guide">
           <strong>다중 선택</strong>
-          <span>왼쪽 체크박스를 누른 순서대로 위에 모이며 실시간으로 작성됩니다.</span>
+          <span>왼쪽 체크박스를 누른 순서대로 위에 모입니다. 입력이 필요한 문구만 작성칸이 펼쳐집니다.</span>
         </div>
         <div className="template-list">
           {selectedTemplateRows.length > 0 && (
@@ -1653,6 +2031,21 @@ ${report.content.trim()}` : ''}`
               {selectedTemplateRows.map(({ template, draft }, index) =>
                 renderTemplateRow(template, draft, index + 1),
               )}
+            </div>
+          )}
+
+          {hasPatientOccurrence(incident) && (
+            <div className="patient-template-group">
+              <div className="template-section-label">환자 대응</div>
+              {unselectedPatientTemplates.length > 0 ? (
+                unselectedPatientTemplates.map((template) =>
+                  renderTemplateRow(template),
+                )
+              ) : patientTemplates.length === 0 ? (
+                <div className="patient-template-empty">
+                  환자 인원을 입력하면 환자 대응 문구가 자동 생성됩니다.
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -1785,7 +2178,11 @@ function App() {
       ...previous,
       incidents: previous.incidents.map((incident) => {
         if (incident.id !== previous.activeId) return incident
-        return typeof updater === 'function' ? updater(incident) : { ...incident, ...updater }
+        const updatedIncident =
+          typeof updater === 'function'
+            ? updater(incident)
+            : { ...incident, ...updater }
+        return synchronizePatientTemplateDrafts(updatedIncident)
       }),
     }))
   }
@@ -1935,7 +2332,9 @@ function App() {
 
   const appendToReport = (reportId, text, templateId = '') => {
     updateCurrent((incident) => {
-      const withHistory = addHistoryItems(incident, text)
+      const withHistory = String(templateId || '').startsWith(PATIENT_TEMPLATE_PREFIX)
+        ? incident
+        : addHistoryItems(incident, text)
       const shouldHideTemplate = QUICK_ONCE_TEMPLATE_IDS.includes(templateId)
       const usedQuickTemplateIds = shouldHideTemplate
         ? Array.from(new Set([...(withHistory.usedQuickTemplateIds || []), templateId]))
@@ -1966,7 +2365,9 @@ function App() {
         }
 
         const values = getDefaultValues(template)
-        generatedText = buildLiveTemplateText(template, values)
+        generatedText = template.patientTemplate
+          ? template.build(values)
+          : formatResponseItemText(buildLiveTemplateText(template, values))
         const nextDraft = {
           ...createTemplateDraft(template.id, values),
           generatedText,
@@ -1994,7 +2395,11 @@ function App() {
           : incident.usedQuickTemplateIds || [],
       }
 
-      if (generatedText && isLiveTemplateComplete(template, getDefaultValues(template))) {
+      if (
+        generatedText &&
+        !template.patientTemplate &&
+        isLiveTemplateComplete(template, getDefaultValues(template))
+      ) {
         nextIncident = addHistoryItems(nextIncident, generatedText)
       }
       return nextIncident
@@ -2038,7 +2443,7 @@ function App() {
           const template = getTemplateById(templateId)
           if (!template) return draft
           const values = { ...draft.values, [key]: value }
-          const generatedText = buildLiveTemplateText(template, values)
+          const generatedText = formatResponseItemText(buildLiveTemplateText(template, values))
           return { ...draft, values, generatedText }
         })
 
@@ -2068,11 +2473,14 @@ function App() {
           templateDrafts: (report.templateDrafts || []).map((draft) => {
             if (draft.templateId !== templateId) return draft
             const nextCollapsed = !draft.collapsed
-            const template = getTemplateById(templateId)
+            const template =
+              getPatientInfoTemplates(incident).find(
+                (item) => item.id === templateId,
+              ) || getTemplateById(templateId)
             if (
               nextCollapsed &&
-              template &&
-              isLiveTemplateComplete(template, draft.values)
+              String(draft.generatedText || '').trim() &&
+              (!template || isLiveTemplateComplete(template, draft.values))
             ) {
               historyText = draft.generatedText
             }
@@ -2348,7 +2756,7 @@ function App() {
                                 <input
                                   type="text"
                                   value={patient.affiliation}
-                                  placeholder="예: 비비테크"
+                                  placeholder="예: 삼성전자"
                                   onChange={(event) =>
                                     updateCurrent((current) => ({
                                       ...current,
@@ -2418,7 +2826,7 @@ function App() {
                                 <input
                                   type="text"
                                   value={patient.affiliation}
-                                  placeholder="예: 비비테크"
+                                  placeholder="예: 삼성전자"
                                   onChange={(event) =>
                                     updateCurrent((current) => ({
                                       ...current,
