@@ -240,6 +240,29 @@ select:focus {
   font-weight: 900;
 }
 
+.field-title-main {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 900;
+}
+
+.gas-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(251, 191, 36, 0.38);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+
 .checkbox-label,
 .no-contact-toggle,
 .gas-toggle {
@@ -927,6 +950,7 @@ select:focus {
   font-size: 1.45rem;
   line-height: 1;
 }
+
 
 .import-textarea {
   min-height: 360px;

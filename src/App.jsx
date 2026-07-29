@@ -609,7 +609,7 @@ const parseGasPhenomenon = (phenomenon) => {
 
   const normalized = original.replace(/\s+/g, ' ').trim()
   const match = normalized.match(
-    /^(환경감지기|(.+?)호기)\s+(.+?)\s+([ABCD])급\s+(.+?)\s*(ppm|ppb|%LEL)\s*(?:Alarm|알람)(?:\s*발생)?(?:\s*외\s*(\d+)\s*건\s*발생)?/i,
+    /^(환경감지기|(.+?)호기)\s+(.+?)\s+([ABCD])급\s+(.+?)\s*(ppm|ppb|%LEL)\s*(?:(?:Gas\s+)?Alarm|알람)(?:\s*발생)?(?:\s*외\s*(\d+)\s*건\s*발생)?/i,
   )
 
   if (!match) return { gasAlarm: true, gasDraft: null }
@@ -627,6 +627,179 @@ const parseGasPhenomenon = (phenomenon) => {
       extraCount: String(match[7] || '').trim(),
     },
   }
+}
+
+
+const normalizeGasBuildingName = (rawValue) => {
+  const value = String(rawValue || '').replace(/\s+/g, ' ').trim()
+  if (!value) return ''
+
+  if (/복합\s*3(?:동)?|P3\s*복합/i.test(value)) return '복합3동'
+  if (/복합\s*4(?:동)?|P4\s*복합/i.test(value)) return '복합4동'
+
+  const lineBuilding = value.match(/평택[_\s-]*(\d+)L동/i)
+  if (lineBuilding) return `P${lineBuilding[1]}L`
+
+  const shortBuilding = value.match(/\bP(\d+)L\b/i)
+  if (shortBuilding) return `P${shortBuilding[1]}L`
+
+  const englishBuilding = value.match(/PYEONGTAEK[_\s-]*(\d+)/i)
+  return englishBuilding ? `P${englishBuilding[1]}L` : value
+}
+
+const normalizeGasLocation = (rawValue) => {
+  const value = String(rawValue || '').replace(/\s+/g, ' ').trim()
+  if (!value) return ''
+
+  const floor = value.match(/(\d+)\s*층/i)
+  const bay = value.match(/([A-Z]\d+)\s*(?:베이|BAY)/i)
+  const pillar = value.match(/([A-Z]\d+)\s*기둥/i)
+
+  const parts = []
+  if (floor) parts.push(`${floor[1]}F`)
+  if (bay) parts.push(`${bay[1].toUpperCase()}BAY`)
+  if (pillar) parts.push(`${pillar[1].toUpperCase()}기둥`)
+
+  if (parts.length) return parts.join(' ')
+
+  return value
+    .replace(/(\d+)\s*층/gi, '$1F')
+    .replace(/([A-Z]\d+)\s*베이/gi, '$1BAY')
+    .replace(/\b베이\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase()
+}
+
+const normalizeGasUnit = (rawValue) => {
+  const compact = String(rawValue || '').replace(/\s+/g, '').toUpperCase()
+  return compact === '%LEL' ? '%LEL' : compact.toLowerCase()
+}
+
+const createParsedGasAlarm = ({ building, location, equipment, gasName, grade, value, unit, source }) => {
+  const normalizedBuilding = normalizeGasBuildingName(building)
+  const normalizedLocation = normalizeGasLocation(location)
+  const normalizedEquipment = String(equipment || '').trim().toUpperCase()
+  const normalizedGasName = String(gasName || '').trim()
+  const normalizedGrade = String(grade || '').trim().toUpperCase()
+  const normalizedValue = String(value || '').trim()
+  const normalizedUnit = normalizeGasUnit(unit)
+  const title = [normalizedBuilding, normalizedLocation].filter(Boolean).join(' ').trim()
+  const phenomenon = [
+    normalizedEquipment,
+    normalizedGasName,
+    normalizedGrade ? `${normalizedGrade}급` : '',
+    normalizedValue,
+    normalizedUnit,
+    'Gas Alarm 발생',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const missing = []
+  if (!normalizedBuilding) missing.push('건물')
+  if (!normalizedLocation) missing.push('위치')
+  if (!normalizedEquipment) missing.push('대상 설비')
+  if (!normalizedGasName) missing.push('가스명')
+  if (!normalizedGrade) missing.push('등급')
+  if (!normalizedValue) missing.push('수치')
+  if (!normalizedUnit) missing.push('단위')
+
+  return {
+    recognized: missing.length === 0,
+    missing,
+    source,
+    title: title.toUpperCase(),
+    phenomenon,
+    gasDraft: {
+      mode: 'single',
+      sourceType: 'unit',
+      unitNo: normalizedEquipment,
+      target: normalizedGasName,
+      grade: normalizedGrade || 'A',
+      value: normalizedValue,
+      unit: normalizedUnit || 'ppm',
+      extraCount: '',
+    },
+  }
+}
+
+const parseDetailedGasAlarmMessage = (text) => {
+  const buildingMatch = text.match(/-\s*건물\s*정보\s*:\s*([^\n]+)/i)
+  const locationMatch = text.match(/-\s*위치\s*정보\s*:\s*([^\n]+)/i)
+  const equipmentMatch = text.match(/-\s*대상\s*설비\s*:\s*([^\n]+)/i)
+  const alarmMatch = text.match(/-\s*알람\s*정보\s*:\s*([^\n]+)/i)
+
+  if (!buildingMatch && !locationMatch && !equipmentMatch && !alarmMatch) return null
+
+  const alarmText = String(alarmMatch?.[1] || '').trim()
+  const alarmParts = alarmText.match(/^(.+?)\s+([ABCD])급\s*([0-9]+(?:\.[0-9]+)?)\s*(ppm|ppb|%\s*LEL)\b/i)
+
+  return createParsedGasAlarm({
+    building: buildingMatch?.[1],
+    location: locationMatch?.[1],
+    equipment: equipmentMatch?.[1],
+    gasName: alarmParts?.[1],
+    grade: alarmParts?.[2],
+    value: alarmParts?.[3],
+    unit: alarmParts?.[4],
+    source: 'sms',
+  })
+}
+
+const parseMessengerGasAlarmMessage = (text) => {
+  if (!/(토빅방|메시지\s*:|가스감지기\]\s*평택_)/i.test(text)) return null
+
+  const buildingMatch = text.match(/평택[_\s-]*(복합\s*[34]동|\d+L동)/i)
+  const floorMatch = text.match(/(\d+)\s*층/i)
+  const bayMatch = text.match(/([A-Z]\d+)\s*(?:BAY|베이)/i)
+  const pillarMatch = text.match(/([A-Z]\d+)\s*기둥/i)
+  const sensorMatch = text.match(/\b[A-Z]{1,4}-GST-[^\s,]+/i)
+  const alarmParts = text.match(/([ABCD])등급\s*(.+?)\/\s*([0-9]+(?:\.[0-9]+)?)\s*(ppm|ppb|%\s*LEL)\b/i)
+
+  const sensor = String(sensorMatch?.[0] || '').trim()
+  const equipment = sensor.includes('(') ? sensor.slice(sensor.indexOf('(')) : sensor
+  const location = [
+    floorMatch ? `${floorMatch[1]}층` : '',
+    bayMatch ? `${bayMatch[1]}Bay` : '',
+    pillarMatch ? `${pillarMatch[1]}기둥` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return createParsedGasAlarm({
+    building: buildingMatch?.[0],
+    location,
+    equipment,
+    gasName: alarmParts?.[2],
+    grade: alarmParts?.[1],
+    value: alarmParts?.[3],
+    unit: alarmParts?.[4],
+    source: 'messenger',
+  })
+}
+
+const parseGasAlarmMessage = (rawText) => {
+  const text = String(rawText || '').replace(/\r\n?/g, '\n').trim()
+  if (!text) return { recognized: false, missing: ['문자 내용'] }
+
+  return (
+    parseDetailedGasAlarmMessage(text) ||
+    parseMessengerGasAlarmMessage(text) || {
+      recognized: false,
+      missing: ['건물', '위치', '대상 설비', '알람 정보'],
+    }
+  )
+}
+
+const isLikelyGasAlarmMessage = (rawText) => {
+  const text = String(rawText || '').replace(/\r\n?/g, '\n')
+  return (
+    /가스감지기\s*알람\s*발생/i.test(text) ||
+    /\[가스감지기\]/i.test(text) ||
+    /^\s*-\s*알람\s*정보\s*:/im.test(text) ||
+    (/^\s*-\s*대상\s*설비\s*:/im.test(text) && /^\s*-\s*위치\s*정보\s*:/im.test(text))
+  )
 }
 
 const parseImportedReport = (rawText, incidentId) => {
@@ -676,7 +849,7 @@ const parseImportedReport = (rawText, incidentId) => {
       return
     }
 
-    const commonMatch = trimmed.match(/^[-–]?\.\s*(현상|성상|환자\s*여부|작업사항)\s*:\s*(.*)$/)
+    const commonMatch = trimmed.match(/^[-–]?\.\s*(현상|성상|환자\s*여부|(?:주변\s*)?작업사항)\s*:\s*(.*)$/)
     if (commonMatch) {
       const label = commonMatch[1].replace(/\s+/g, '')
       section =
@@ -831,8 +1004,12 @@ const buildFinalText = (incident) => {
     }
   }
   commonLines.push(...buildPatientLines(incident))
-  if (incident.includeWork && !incident.workNone) {
-    commonLines.push(...formatMultilineField('작업사항', incident.workDetails))
+  if (incident.includeWork) {
+    if (incident.workNone) {
+      commonLines.push('-. 주변 작업사항: 없음')
+    } else if (String(incident.workDetails || '').trim()) {
+      commonLines.push(...formatMultilineField('주변 작업사항', incident.workDetails))
+    }
   }
 
   const responseLines = uniqueLines(
@@ -1056,7 +1233,7 @@ function GasAlarmBuilder({ incident, updateCurrent }) {
 
     const base = `${source} ${String(draft.target).trim()} ${draft.grade}급 ${String(
       draft.value,
-    ).trim()} ${draft.unit} Alarm`
+    ).trim()} ${draft.unit} Gas Alarm 발생`
 
     const sentence =
       draft.mode === 'multiple'
@@ -1396,8 +1573,8 @@ function ImportDialog({ value, onChange, onApply, onClose }) {
         <div className="import-dialog-heading">
           <div>
             <p className="section-index">LOAD REPORT</p>
-            <h2 id="import-dialog-title">대응 정리 불러오기</h2>
-            <p>기존 대응 정리 전체를 붙여넣으면 현재 출동에 자동 적용합니다.</p>
+            <h2 id="import-dialog-title">불러오기</h2>
+            <p>대응 정리 또는 가스알람 문자 전체를 붙여넣으면 형식을 자동으로 판단합니다.</p>
           </div>
           <button type="button" className="dialog-close-button" onClick={onClose}>
             ×
@@ -1408,14 +1585,27 @@ function ImportDialog({ value, onChange, onApply, onClose }) {
           className="import-textarea"
           value={value}
           autoFocus
-          placeholder={`[출동 위치]\n-. 현상: ...\n-. 성상: ...\n-. 환자 여부: ...\n-. 작업사항: ...\n\n-. 대응 내용\n1. ...\n2. ...\n\n-. 원인분석 및 재발방지대책 요청하겠습니다.\n**상황 종료합니다.`}
+          placeholder={`대응 정리 또는 가스알람 문자 전체를 붙여넣으세요.
+
+[출동 위치]
+-. 현상: ...
+-. 주변 작업사항: ...
+
+또는
+
+[Web발신]
+[인프라][가스감지기 알람 발생]...
+- 위치 정보: ...
+- 대상 설비: ...
+- 알람 정보: ...`}
           onChange={(event) => onChange(event.target.value)}
         />
 
         <div className="import-help">
-          <strong>자동 인식 항목</strong>
-          <span>제목·현상·성상·환자·작업사항·중간보고·사용 이력·종료 문구</span>
-          <span>현상에 Alarm 또는 알람이 있으면 Gas Alarm 형식도 자동 복원합니다.</span>
+          <strong>자동 판별</strong>
+          <span>가스알람 문자: 건물·층·BAY·기둥·대상 설비·가스명·등급·수치·단위를 인식합니다.</span>
+          <span>대응 정리: 제목·현상·성상·환자·주변 작업사항·중간보고·사용 이력·종료 문구를 인식합니다.</span>
+          <span>복합3동과 복합4동은 제목에 각각 복합3동·복합4동으로 표시합니다.</span>
         </div>
 
         <div className="import-dialog-actions">
@@ -1498,15 +1688,54 @@ function App() {
     updateCurrent((incident) => createIncident(incident.id))
   }
 
+  const closeImport = () => {
+    setImportOpen(false)
+    setImportText('')
+  }
+
   const applyImport = () => {
     if (!String(importText || '').trim()) {
-      window.alert('불러올 대응 정리 내용을 붙여넣어 주세요.')
+      window.alert('불러올 대응 정리 또는 가스알람 문자 내용을 붙여넣어 주세요.')
+      return
+    }
+
+    const parsedGas = parseGasAlarmMessage(importText)
+    if (parsedGas.recognized) {
+      if (
+        (String(activeIncident.title || '').trim() || String(activeIncident.phenomenon || '').trim()) &&
+        !window.confirm(
+          '가스알람 문자로 인식했습니다. 현재 출동의 제목 또는 현상을 바꿀까요?\n중간보고와 다른 입력 내용은 그대로 유지됩니다.',
+        )
+      ) {
+        return
+      }
+
+      updateCurrent((incident) => ({
+        ...incident,
+        title: parsedGas.title,
+        phenomenon: parsedGas.phenomenon,
+        includePhenomenon: true,
+        gasAlarm: true,
+        gasDraft: parsedGas.gasDraft,
+      }))
+      closeImport()
+      notify('가스알람 문자를 자동 인식해 현재 출동에 적용했습니다.')
+      return
+    }
+
+    if (isLikelyGasAlarmMessage(importText)) {
+      const missing = Array.isArray(parsedGas.missing) ? parsedGas.missing.join(', ') : ''
+      window.alert(
+        `가스알람 문자 형식으로 판단했지만 필요한 정보를 모두 찾지 못했습니다.${
+          missing ? `\n확인 필요: ${missing}` : ''
+        }`,
+      )
       return
     }
 
     const parsed = parseImportedReport(importText, activeIncident.id)
     if (!parsed.recognizedCount) {
-      window.alert('인식할 수 있는 보고서 항목이 없습니다. 대응 정리 형식을 확인해 주세요.')
+      window.alert('인식할 수 있는 항목이 없습니다. 대응 정리 또는 가스알람 문자 형식을 확인해 주세요.')
       return
     }
 
@@ -1518,11 +1747,10 @@ function App() {
     }
 
     updateCurrent(() => parsed.incident)
-    setImportOpen(false)
-    setImportText('')
+    closeImport()
     notify(
       parsed.gasAlarm
-        ? `Gas Alarm 보고와 중간보고 ${parsed.responseCount}건을 불러왔습니다.`
+        ? `가스 출동 보고와 중간보고 ${parsed.responseCount}건을 불러왔습니다.`
         : `보고서와 중간보고 ${parsed.responseCount}건을 불러왔습니다.`,
     )
   }
@@ -1753,7 +1981,10 @@ function App() {
           <button
             type="button"
             className="import-button"
-            onClick={() => setImportOpen(true)}
+            onClick={() => {
+              setImportText('')
+              setImportOpen(true)
+            }}
           >
             불러오기
             <small>현재 출동에 적용</small>
@@ -1828,7 +2059,12 @@ function App() {
 
             <div className="common-field-block">
               <div className="field-title-row">
-                <span>현상</span>
+                <div className="field-title-main">
+                  <span>현상</span>
+                  {activeIncident.gasAlarm && (
+                    <span className="gas-status-badge">가스 출동 작성 중</span>
+                  )}
+                </div>
                 <label className="checkbox-label">
                   <input
                     type="checkbox"
@@ -1846,21 +2082,6 @@ function App() {
                 onChange={(event) => updateCurrent({ phenomenon: event.target.value })}
               />
 
-              <label className="gas-toggle">
-                <input
-                  type="checkbox"
-                  checked={activeIncident.gasAlarm}
-                  onChange={(event) => updateCurrent({ gasAlarm: event.target.checked })}
-                />
-                <span>
-                  <strong>Gas Alarm</strong>
-                  <small>체크하면 현상 자동작성과 전용 대응 문구 5개가 활성화됩니다.</small>
-                </span>
-              </label>
-
-              {activeIncident.gasAlarm && (
-                <GasAlarmBuilder incident={activeIncident} updateCurrent={updateCurrent} />
-              )}
             </div>
 
             <div className="common-field-block">
@@ -1982,7 +2203,7 @@ function App() {
 
             <div className="common-field-block">
               <div className="field-title-row">
-                <span>작업사항</span>
+                <span>주변 작업사항</span>
                 <label className="checkbox-label">
                   <input
                     type="checkbox"
@@ -2005,7 +2226,7 @@ function App() {
               {!activeIncident.workNone && (
                 <textarea
                   value={activeIncident.workDetails}
-                  placeholder="작업 내용, 진행사항, 특이사항 등을 자유롭게 입력하세요."
+                  placeholder="주변 작업 내용, 진행사항, 특이사항 등을 자유롭게 입력하세요."
                   onChange={(event) => updateCurrent({ workDetails: event.target.value })}
                 />
               )}
@@ -2118,10 +2339,7 @@ function App() {
           value={importText}
           onChange={setImportText}
           onApply={applyImport}
-          onClose={() => {
-            setImportOpen(false)
-            setImportText('')
-          }}
+          onClose={closeImport}
         />
       )}
 

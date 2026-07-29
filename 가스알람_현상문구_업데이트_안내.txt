@@ -1,0 +1,8 @@
+ERT출동보고 V2 가스알람 현상 문구 수정
+
+가스알람 문자 불러오기 시 현상 문구의 끝을 다음과 같이 생성합니다.
+
+기존: (R)VMBE02-COS-M COS B급 5.00 ppm Alarm
+변경: (R)VMBE02-COS-M COS B급 5.00 ppm Gas Alarm 발생
+
+기존 Alarm 형식의 보고서를 불러오는 호환성은 유지합니다.
