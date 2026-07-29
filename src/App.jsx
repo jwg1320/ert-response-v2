@@ -62,7 +62,9 @@ const createIncident = (id = createId()) => ({
   includePhenomenon: true,
   ph: '',
   leakAmount: '',
+  leakProgress: '',
   leakRate: '',
+  leakSurfaceState: '',
   includeProperty: true,
   includePatient: true,
   noContact: true,
@@ -111,6 +113,16 @@ const normalizeState = (raw) => {
       typeof incident.workNone === 'boolean'
         ? incident.workNone
         : !String(incident.workDetails || '').trim(),
+    leakProgress:
+      incident.leakProgress === 'ongoing' || incident.leakProgress === 'none'
+        ? incident.leakProgress
+        : String(incident.leakRate || '').trim()
+          ? 'ongoing'
+          : '',
+    leakSurfaceState:
+      incident.leakSurfaceState === '맺힘' || incident.leakSurfaceState === '고임'
+        ? incident.leakSurfaceState
+        : '',
     gasDraft: {
       ...createIncident().gasDraft,
       ...(incident.gasDraft || {}),
@@ -908,7 +920,9 @@ const parsePropertyText = (text) => {
 
   let ph = ''
   let leakAmount = ''
+  let leakProgress = ''
   let leakRate = ''
+  let leakSurfaceState = ''
   const remaining = []
 
   parts.forEach((part) => {
@@ -927,6 +941,19 @@ const parsePropertyText = (text) => {
     const rateMatch = part.match(/^Leak\s*속도\s*[:=]?\s*(.*)$/i)
     if (rateMatch) {
       leakRate = rateMatch[1].trim()
+      leakProgress = 'ongoing'
+      return
+    }
+
+    if (/진행\s*중인?\s*Leak\s*없음/i.test(part)) {
+      leakProgress = 'none'
+      if (/맺힘/.test(part)) leakSurfaceState = '맺힘'
+      if (/고임/.test(part)) leakSurfaceState = '고임'
+      return
+    }
+
+    if (/^(맺힘|고임)$/.test(part)) {
+      leakSurfaceState = part
       return
     }
 
@@ -936,17 +963,21 @@ const parsePropertyText = (text) => {
   remaining.forEach((part) => {
     if (!leakRate && /(초당|분당|시간당|방울|속도|흐름)/i.test(part)) {
       leakRate = part
+      leakProgress = 'ongoing'
     } else if (!leakAmount) {
       leakAmount = part
-    } else if (!leakRate) {
+    } else if (!leakRate && leakProgress !== 'none') {
       leakRate = part
-    } else {
+      leakProgress = 'ongoing'
+    } else if (leakProgress !== 'none') {
       leakRate = `${leakRate}, ${part}`
+      leakProgress = 'ongoing'
     }
   })
 
-  return { ph, leakAmount, leakRate }
+  return { ph, leakAmount, leakProgress, leakRate, leakSurfaceState }
 }
+
 
 const parseGasPhenomenon = (phenomenon) => {
   const original = String(phenomenon || '').trim()
@@ -1280,7 +1311,9 @@ const parseImportedReport = (rawText, incidentId) => {
     includePhenomenon: Boolean(parsed.phenomenon.trim()),
     ph: property.ph,
     leakAmount: property.leakAmount,
+    leakProgress: property.leakProgress,
     leakRate: property.leakRate,
+    leakSurfaceState: property.leakSurfaceState,
     includeProperty: Boolean(parsed.property.trim()),
     includePatient: Boolean(patientText),
     noContact,
@@ -1425,7 +1458,9 @@ const hasIncidentContent = (incident) =>
       String(incident.phenomenon || '').trim() ||
       String(incident.ph || '').trim() ||
       String(incident.leakAmount || '').trim() ||
+      String(incident.leakProgress || '').trim() ||
       String(incident.leakRate || '').trim() ||
+      String(incident.leakSurfaceState || '').trim() ||
       String(incident.inhalationCount || '').trim() ||
       String(incident.contactCount || '').trim() ||
       (Array.isArray(incident.contactPatients) &&
@@ -1465,8 +1500,18 @@ const buildFinalText = (incident) => {
     if (String(incident.leakAmount || '').trim()) {
       propertyParts.push(String(incident.leakAmount).trim())
     }
-    if (String(incident.leakRate || '').trim()) {
-      propertyParts.push(String(incident.leakRate).trim())
+    if (incident.leakProgress === 'none') {
+      if (incident.leakSurfaceState === '맺힘' || incident.leakSurfaceState === '고임') {
+        propertyParts.push(incident.leakSurfaceState)
+      }
+      propertyParts.push('진행중인 Leak 없음')
+    } else if (
+      incident.leakProgress === 'ongoing' ||
+      String(incident.leakRate || '').trim()
+    ) {
+      if (String(incident.leakRate || '').trim()) {
+        propertyParts.push(String(incident.leakRate).trim())
+      }
     }
     if (propertyParts.length) {
       commonLines.push(`-. 성상: ${propertyParts.join(', ')}`)
@@ -2659,16 +2704,48 @@ function App() {
                 </label>
 
                 <label className="mini-field wide-on-mobile">
-                  <span>Leak속도</span>
-                  <input
-                    type="text"
-                    value={activeIncident.leakRate}
-                    placeholder="예: 초당 1방울"
+                  <span>Leak 진행 여부</span>
+                  <select
+                    value={activeIncident.leakProgress}
                     onChange={(event) =>
-                      updateCurrent({ leakRate: event.target.value })
+                      updateCurrent({ leakProgress: event.target.value })
                     }
-                  />
+                  >
+                    <option value="">선택하세요</option>
+                    <option value="ongoing">Leak 진행 중</option>
+                    <option value="none">진행중인 Leak 없음</option>
+                  </select>
                 </label>
+
+                {activeIncident.leakProgress === 'ongoing' && (
+                  <label className="mini-field wide-on-mobile">
+                    <span>Leak속도</span>
+                    <input
+                      type="text"
+                      value={activeIncident.leakRate}
+                      placeholder="예: 초당 1방울"
+                      onChange={(event) =>
+                        updateCurrent({ leakRate: event.target.value })
+                      }
+                    />
+                  </label>
+                )}
+
+                {activeIncident.leakProgress === 'none' && (
+                  <label className="mini-field wide-on-mobile">
+                    <span>액상 상태</span>
+                    <select
+                      value={activeIncident.leakSurfaceState}
+                      onChange={(event) =>
+                        updateCurrent({ leakSurfaceState: event.target.value })
+                      }
+                    >
+                      <option value="">선택 안 함</option>
+                      <option value="맺힘">맺힘</option>
+                      <option value="고임">고임</option>
+                    </select>
+                  </label>
+                )}
               </div>
             </div>
 
