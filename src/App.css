@@ -350,8 +350,47 @@ select:focus {
   min-height: 40px;
 }
 
-.patient-textarea {
-  min-height: 135px;
+.patient-groups-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.patient-group {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.patient-group h4 {
+  margin: 0;
+  color: #dbe4f4;
+  font-size: 0.9rem;
+}
+
+.patient-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #0b1220;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+
+.patient-card > strong {
+  color: #f8fafc;
+  font-size: 0.86rem;
+}
+
+.patient-name-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.patient-area-field {
+  grid-column: 1 / -1;
 }
 
 .gas-toggle {
@@ -841,6 +880,8 @@ select:focus {
   }
 
   .patient-count-grid,
+  .patient-groups-grid,
+  .patient-name-grid,
   .gas-input-grid,
   .template-field-grid {
     grid-template-columns: 1fr;

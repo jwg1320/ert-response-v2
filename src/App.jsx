@@ -25,6 +25,34 @@ const createReport = () => ({
   templateDrafts: [],
 })
 
+const createPatientRecord = (type = 'inhalation') => ({
+  id: createId(),
+  affiliation: '',
+  name: '',
+  ...(type === 'contact' ? { contactArea: '' } : {}),
+})
+
+const normalizePatientCountInput = (value) => {
+  if (value === '') return ''
+  const parsed = Number.parseInt(value, 10)
+  if (!Number.isFinite(parsed)) return ''
+  return String(Math.max(0, parsed))
+}
+
+const resizePatientRecords = (records, count, type) => {
+  const target = Math.max(0, Number.parseInt(count, 10) || 0)
+  const normalized = Array.isArray(records)
+    ? records.map((record) => ({
+        ...createPatientRecord(type),
+        ...record,
+        id: record?.id || createId(),
+      }))
+    : []
+
+  while (normalized.length < target) normalized.push(createPatientRecord(type))
+  return normalized.slice(0, target)
+}
+
 const createIncident = (id = createId()) => ({
   id,
   title: '',
@@ -38,7 +66,8 @@ const createIncident = (id = createId()) => ({
   noContact: true,
   inhalationCount: '',
   contactCount: '',
-  patientDetails: '',
+  contactPatients: [],
+  inhalationPatients: [],
   workDetails: '',
   workNone: true,
   includeWork: true,
@@ -84,6 +113,16 @@ const normalizeState = (raw) => {
       ...createIncident().gasDraft,
       ...(incident.gasDraft || {}),
     },
+    contactPatients: resizePatientRecords(
+      incident.contactPatients,
+      incident.contactCount,
+      'contact',
+    ),
+    inhalationPatients: resizePatientRecords(
+      incident.inhalationPatients,
+      incident.inhalationCount,
+      'inhalation',
+    ),
     reports:
       Array.isArray(incident.reports) && incident.reports.length > 0
         ? incident.reports.map((report) => ({
@@ -530,28 +569,107 @@ const buildPatientLines = (incident) => {
   if (incident.noContact) return ['-. 환자 여부: 접촉자 없음']
 
   const patientTypes = []
-  if (String(incident.inhalationCount).trim()) {
-    patientTypes.push(`흡입환자 ${String(incident.inhalationCount).trim()}명`)
-  }
   if (String(incident.contactCount).trim()) {
     patientTypes.push(`접촉환자 ${String(incident.contactCount).trim()}명`)
   }
-
-  const details = String(incident.patientDetails || '')
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim())
+  if (String(incident.inhalationCount).trim()) {
+    patientTypes.push(`흡입환자 ${String(incident.inhalationCount).trim()}명`)
+  }
 
   const lines = []
   if (patientTypes.length) {
     lines.push(`-. 환자 여부: ${patientTypes.join(' / ')} 발생`)
-  } else if (details.length) {
-    lines.push(`-. 환자 여부: ${details[0].trim()}`)
-    details.shift()
   }
 
-  lines.push(...details)
+  resizePatientRecords(incident.contactPatients, incident.contactCount, 'contact').forEach(
+    (patient, index) => {
+      const identity = []
+      if (String(patient.affiliation || '').trim()) {
+        identity.push(`소속 ${String(patient.affiliation).trim()}`)
+      }
+      if (String(patient.name || '').trim()) {
+        identity.push(`이름 ${String(patient.name).trim()}`)
+      }
+      if (identity.length) {
+        lines.push(`접촉환자 ${index + 1}: ${identity.join(' / ')}`)
+      } else if (String(patient.contactArea || '').trim()) {
+        lines.push(`접촉환자 ${index + 1}:`)
+      }
+      if (String(patient.contactArea || '').trim()) {
+        lines.push(`접촉 부위: ${String(patient.contactArea).trim()}`)
+      }
+    },
+  )
+
+  resizePatientRecords(
+    incident.inhalationPatients,
+    incident.inhalationCount,
+    'inhalation',
+  ).forEach((patient, index) => {
+    const identity = []
+    if (String(patient.affiliation || '').trim()) {
+      identity.push(`소속 ${String(patient.affiliation).trim()}`)
+    }
+    if (String(patient.name || '').trim()) {
+      identity.push(`이름 ${String(patient.name).trim()}`)
+    }
+    if (identity.length) {
+      lines.push(`흡입환자 ${index + 1}: ${identity.join(' / ')}`)
+    }
+  })
+
   return lines
+}
+
+const parsePatientRecords = (patientLines, count, type) => {
+  const records = resizePatientRecords([], count, type)
+  let activeContactIndex = -1
+
+  patientLines.forEach((line) => {
+    const trimmed = String(line || '').trim()
+    const contactMatch = trimmed.match(/^접촉환자\s*(\d+)\s*[:.]\s*(.*)$/)
+    if (contactMatch && type === 'contact') {
+      const index = Math.max(0, Number.parseInt(contactMatch[1], 10) - 1)
+      const detail = String(contactMatch[2] || '').trim()
+      const affiliationMatch = detail.match(/소속\s*(.*?)(?=\s*\/\s*이름|$)/)
+      const nameMatch = detail.match(/이름\s*(.*)$/)
+      if (records[index]) {
+        records[index] = {
+          ...records[index],
+          affiliation: String(affiliationMatch?.[1] || '').trim(),
+          name: String(nameMatch?.[1] || '').trim(),
+        }
+        activeContactIndex = index
+      }
+      return
+    }
+
+    const inhalationMatch = trimmed.match(/^흡입환자\s*(\d+)\s*[:.]\s*(.*)$/)
+    if (inhalationMatch && type === 'inhalation') {
+      const index = Math.max(0, Number.parseInt(inhalationMatch[1], 10) - 1)
+      const detail = String(inhalationMatch[2] || '').trim()
+      const affiliationMatch = detail.match(/소속\s*(.*?)(?=\s*\/\s*이름|$)/)
+      const nameMatch = detail.match(/이름\s*(.*)$/)
+      if (records[index]) {
+        records[index] = {
+          ...records[index],
+          affiliation: String(affiliationMatch?.[1] || '').trim(),
+          name: String(nameMatch?.[1] || '').trim(),
+        }
+      }
+      return
+    }
+
+    const contactAreaMatch = trimmed.match(/^접촉\s*부위\s*:\s*(.*)$/)
+    if (contactAreaMatch && type === 'contact' && activeContactIndex >= 0) {
+      records[activeContactIndex] = {
+        ...records[activeContactIndex],
+        contactArea: String(contactAreaMatch[1] || '').trim(),
+      }
+    }
+  })
+
+  return records
 }
 
 const parsePropertyText = (text) => {
@@ -899,15 +1017,18 @@ const parseImportedReport = (rawText, incidentId) => {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-  const patientHeadline = patientLines[0] || ''
   const noContact = /접촉자\s*없음|환자\s*없음/.test(patientText)
   const inhalationMatch = patientText.match(/흡입환자\s*(\d+)\s*명/)
   const contactMatch = patientText.match(/접촉환자\s*(\d+)\s*명/)
-  const patientDetails = noContact
-    ? patientLines.slice(1).join('\n')
-    : inhalationMatch || contactMatch
-      ? patientLines.slice(1).join('\n')
-      : patientLines.join('\n')
+  const inhalationCount = inhalationMatch ? inhalationMatch[1] : ''
+  const contactCount = contactMatch ? contactMatch[1] : ''
+  const patientDetailLines = patientLines.slice(1)
+  const contactPatients = parsePatientRecords(patientDetailLines, contactCount, 'contact')
+  const inhalationPatients = parsePatientRecords(
+    patientDetailLines,
+    inhalationCount,
+    'inhalation',
+  )
 
   const workText = parsed.work.trim()
   const workNone = !workText || /^없음\.?$/.test(workText)
@@ -927,9 +1048,10 @@ const parseImportedReport = (rawText, incidentId) => {
     includeProperty: Boolean(parsed.property.trim()),
     includePatient: Boolean(patientText),
     noContact,
-    inhalationCount: inhalationMatch ? inhalationMatch[1] : '',
-    contactCount: contactMatch ? contactMatch[1] : '',
-    patientDetails,
+    inhalationCount,
+    contactCount,
+    contactPatients,
+    inhalationPatients,
     workDetails: workNone ? '' : workText,
     workNone,
     includeWork: Boolean(workText),
@@ -973,7 +1095,16 @@ const hasIncidentContent = (incident) =>
       String(incident.leakRate || '').trim() ||
       String(incident.inhalationCount || '').trim() ||
       String(incident.contactCount || '').trim() ||
-      String(incident.patientDetails || '').trim() ||
+      (Array.isArray(incident.contactPatients) &&
+        incident.contactPatients.some((patient) =>
+          [patient.affiliation, patient.name, patient.contactArea].some((value) =>
+            String(value || '').trim(),
+          ),
+        )) ||
+      (Array.isArray(incident.inhalationPatients) &&
+        incident.inhalationPatients.some((patient) =>
+          [patient.affiliation, patient.name].some((value) => String(value || '').trim()),
+        )) ||
       String(incident.workDetails || '').trim() ||
       incident.gasAlarm ||
       incident.endEnabled ||
@@ -2159,44 +2290,173 @@ function App() {
                 <div className="patient-detail-box">
                   <div className="patient-count-grid">
                     <label className="inline-count-field">
-                      <span>흡입환자</span>
-                      <input
-                        type="number"
-                        min="0"
-                        inputMode="numeric"
-                        value={activeIncident.inhalationCount}
-                        onChange={(event) =>
-                          updateCurrent({ inhalationCount: event.target.value })
-                        }
-                      />
-                      <span>명</span>
-                    </label>
-                    <label className="inline-count-field">
                       <span>접촉환자</span>
                       <input
                         type="number"
                         min="0"
                         inputMode="numeric"
                         value={activeIncident.contactCount}
-                        onChange={(event) =>
-                          updateCurrent({ contactCount: event.target.value })
-                        }
+                        onChange={(event) => {
+                          const nextCount = normalizePatientCountInput(event.target.value)
+                          updateCurrent((current) => ({
+                            ...current,
+                            contactCount: nextCount,
+                            contactPatients: resizePatientRecords(
+                              current.contactPatients,
+                              nextCount,
+                              'contact',
+                            ),
+                          }))
+                        }}
+                      />
+                      <span>명</span>
+                    </label>
+                    <label className="inline-count-field">
+                      <span>흡입환자</span>
+                      <input
+                        type="number"
+                        min="0"
+                        inputMode="numeric"
+                        value={activeIncident.inhalationCount}
+                        onChange={(event) => {
+                          const nextCount = normalizePatientCountInput(event.target.value)
+                          updateCurrent((current) => ({
+                            ...current,
+                            inhalationCount: nextCount,
+                            inhalationPatients: resizePatientRecords(
+                              current.inhalationPatients,
+                              nextCount,
+                              'inhalation',
+                            ),
+                          }))
+                        }}
                       />
                       <span>명</span>
                     </label>
                   </div>
 
-                  <label className="field-stack">
-                    <span>환자 상세정보</span>
-                    <textarea
-                      className="patient-textarea"
-                      value={activeIncident.patientDetails}
-                      placeholder="소속, 성명, 연락처, 접촉 부위, 상태, 조치 내용 등을 자유롭게 입력하세요."
-                      onChange={(event) =>
-                        updateCurrent({ patientDetails: event.target.value })
-                      }
-                    />
-                  </label>
+                  <div className="patient-groups-grid">
+                    {activeIncident.contactPatients.length > 0 && (
+                      <section className="patient-group">
+                        <h4>접촉환자 정보</h4>
+                        {activeIncident.contactPatients.map((patient, index) => (
+                          <div className="patient-card" key={patient.id}>
+                            <strong>접촉환자 {index + 1}</strong>
+                            <div className="patient-name-grid">
+                              <label className="mini-field">
+                                <span>소속</span>
+                                <input
+                                  type="text"
+                                  value={patient.affiliation}
+                                  placeholder="예: 비비테크"
+                                  onChange={(event) =>
+                                    updateCurrent((current) => ({
+                                      ...current,
+                                      contactPatients: current.contactPatients.map(
+                                        (item, itemIndex) =>
+                                          itemIndex === index
+                                            ? { ...item, affiliation: event.target.value }
+                                            : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <label className="mini-field">
+                                <span>이름</span>
+                                <input
+                                  type="text"
+                                  value={patient.name}
+                                  placeholder="예: 정원기"
+                                  onChange={(event) =>
+                                    updateCurrent((current) => ({
+                                      ...current,
+                                      contactPatients: current.contactPatients.map(
+                                        (item, itemIndex) =>
+                                          itemIndex === index
+                                            ? { ...item, name: event.target.value }
+                                            : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                            </div>
+                            <label className="mini-field patient-area-field">
+                              <span>접촉 부위</span>
+                              <input
+                                type="text"
+                                value={patient.contactArea}
+                                placeholder="예: 오른팔"
+                                onChange={(event) =>
+                                  updateCurrent((current) => ({
+                                    ...current,
+                                    contactPatients: current.contactPatients.map(
+                                      (item, itemIndex) =>
+                                        itemIndex === index
+                                          ? { ...item, contactArea: event.target.value }
+                                          : item,
+                                    ),
+                                  }))
+                                }
+                              />
+                            </label>
+                          </div>
+                        ))}
+                      </section>
+                    )}
+
+                    {activeIncident.inhalationPatients.length > 0 && (
+                      <section className="patient-group">
+                        <h4>흡입환자 정보</h4>
+                        {activeIncident.inhalationPatients.map((patient, index) => (
+                          <div className="patient-card" key={patient.id}>
+                            <strong>흡입환자 {index + 1}</strong>
+                            <div className="patient-name-grid">
+                              <label className="mini-field">
+                                <span>소속</span>
+                                <input
+                                  type="text"
+                                  value={patient.affiliation}
+                                  placeholder="예: 비비테크"
+                                  onChange={(event) =>
+                                    updateCurrent((current) => ({
+                                      ...current,
+                                      inhalationPatients: current.inhalationPatients.map(
+                                        (item, itemIndex) =>
+                                          itemIndex === index
+                                            ? { ...item, affiliation: event.target.value }
+                                            : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                              <label className="mini-field">
+                                <span>이름</span>
+                                <input
+                                  type="text"
+                                  value={patient.name}
+                                  placeholder="예: 정원기"
+                                  onChange={(event) =>
+                                    updateCurrent((current) => ({
+                                      ...current,
+                                      inhalationPatients: current.inhalationPatients.map(
+                                        (item, itemIndex) =>
+                                          itemIndex === index
+                                            ? { ...item, name: event.target.value }
+                                            : item,
+                                      ),
+                                    }))
+                                  }
+                                />
+                              </label>
+                            </div>
+                          </div>
+                        ))}
+                      </section>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
