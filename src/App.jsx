@@ -10,10 +10,19 @@ const createId = () => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+const createTemplateDraft = (templateId = '', values = {}) => ({
+  id: createId(),
+  templateId,
+  values,
+  collapsed: false,
+  generatedText: '',
+})
+
 const createReport = () => ({
   id: createId(),
   included: true,
   content: '',
+  templateDrafts: [],
 })
 
 const createIncident = (id = createId()) => ({
@@ -81,6 +90,19 @@ const normalizeState = (raw) => {
             ...createReport(),
             ...report,
             id: report.id || createId(),
+            templateDrafts: Array.isArray(report.templateDrafts)
+              ? report.templateDrafts.map((draft) => ({
+                  ...createTemplateDraft(),
+                  ...draft,
+                  id: draft.id || createId(),
+                  values:
+                    draft.values && typeof draft.values === 'object'
+                      ? draft.values
+                      : {},
+                  collapsed: Boolean(draft.collapsed),
+                  generatedText: String(draft.generatedText || ''),
+                }))
+              : [],
           }))
         : [createReport()],
     history: Array.isArray(incident.history) ? incident.history : [],
@@ -358,6 +380,73 @@ const getDefaultValues = (template) => {
     else values[field.key] = ''
   })
   return values
+}
+
+
+const ALL_TEMPLATES = [...GENERAL_TEMPLATES, ...GAS_TEMPLATES]
+
+const getTemplateById = (templateId) =>
+  ALL_TEMPLATES.find((template) => template.id === templateId)
+
+const getVisibleTemplateFields = (template, values) =>
+  (template.fields || []).filter(
+    (field) => !field.showWhen || field.showWhen(values),
+  )
+
+const buildLiveTemplateText = (template, values = {}) => {
+  const safeValues = { ...getDefaultValues(template), ...values }
+
+  ;(template.fields || []).forEach((field) => {
+    if (field.type === 'select') {
+      if (!String(safeValues[field.key] || '').trim()) {
+        safeValues[field.key] = field.options[0]
+      }
+      return
+    }
+
+    const current = String(safeValues[field.key] || '')
+    safeValues[field.key] = current.trim()
+      ? field.uppercase
+        ? current.toUpperCase()
+        : current
+      : '[]'
+  })
+
+  return template.build(safeValues).replace(/\s+/g, ' ').trim()
+}
+
+const isLiveTemplateComplete = (template, values = {}) =>
+  getVisibleTemplateFields(template, values).every(
+    (field) =>
+      field.type === 'select' || String(values[field.key] || '').trim(),
+  )
+
+const removeManagedTemplateLines = (content, drafts = []) => {
+  const lines = String(content || '').split(/\r?\n/)
+
+  drafts.forEach((draft) => {
+    const target = String(draft.generatedText || '').trim()
+    if (!target) return
+    const index = lines.findIndex((line) => line.trim() === target)
+    if (index >= 0) lines.splice(index, 1)
+  })
+
+  while (lines.length && !lines[0].trim()) lines.shift()
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop()
+  return lines
+}
+
+const rebuildReportContentFromDrafts = (
+  content,
+  previousDrafts = [],
+  nextDrafts = [],
+) => {
+  const manualLines = removeManagedTemplateLines(content, previousDrafts)
+  const generatedLines = nextDrafts
+    .map((draft) => String(draft.generatedText || '').trim())
+    .filter(Boolean)
+
+  return [...generatedLines, ...manualLines].join('\n')
 }
 
 const QUICK_ONCE_TEMPLATE_IDS = [
@@ -791,6 +880,38 @@ const copyText = async (text) => {
   document.body.removeChild(textarea)
 }
 
+function TemplateFieldInputs({ template, values, onChange }) {
+  const visibleFields = getVisibleTemplateFields(template, values)
+
+  return (
+    <div className="template-field-grid">
+      {visibleFields.map((field) => (
+        <label className="field-stack" key={field.key}>
+          <span>{field.label}</span>
+          {field.type === 'select' ? (
+            <select
+              value={values[field.key]}
+              onChange={(event) => onChange(field, event.target.value)}
+            >
+              {field.options.map((option) => (
+                <option value={option} key={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={values[field.key] || ''}
+              placeholder={field.placeholder || ''}
+              onChange={(event) => onChange(field, event.target.value)}
+            />
+          )}
+        </label>
+      ))}
+    </div>
+  )
+}
+
 function TemplateEditor({ template, onApply, onCancel }) {
   const [values, setValues] = useState(() => getDefaultValues(template))
 
@@ -798,9 +919,15 @@ function TemplateEditor({ template, onApply, onCancel }) {
     setValues(getDefaultValues(template))
   }, [template])
 
-  const visibleFields = (template.fields || []).filter(
-    (field) => !field.showWhen || field.showWhen(values),
-  )
+  const visibleFields = getVisibleTemplateFields(template, values)
+
+  const changeValue = (field, rawValue) => {
+    const nextValue = field.uppercase ? rawValue.toUpperCase() : rawValue
+    setValues((previous) => ({
+      ...previous,
+      [field.key]: nextValue,
+    }))
+  }
 
   const apply = () => {
     const missing = visibleFields.find(
@@ -822,44 +949,11 @@ function TemplateEditor({ template, onApply, onCancel }) {
       <div className="template-preview-label">선택 문구</div>
       <div className="template-source">{template.label}</div>
 
-      <div className="template-field-grid">
-        {visibleFields.map((field) => (
-          <label className="field-stack" key={field.key}>
-            <span>{field.label}</span>
-            {field.type === 'select' ? (
-              <select
-                value={values[field.key]}
-                onChange={(event) =>
-                  setValues((previous) => ({
-                    ...previous,
-                    [field.key]: event.target.value,
-                  }))
-                }
-              >
-                {field.options.map((option) => (
-                  <option value={option} key={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={values[field.key]}
-                placeholder={field.placeholder || ''}
-                onChange={(event) => {
-                  const nextValue = field.uppercase
-                    ? event.target.value.toUpperCase()
-                    : event.target.value
-                  setValues((previous) => ({
-                    ...previous,
-                    [field.key]: nextValue,
-                  }))
-                }}
-              />
-            )}
-          </label>
-        ))}
-      </div>
+      <TemplateFieldInputs
+        template={template}
+        values={values}
+        onChange={changeValue}
+      />
 
       <div className="template-editor-actions">
         <button type="button" className="secondary-button" onClick={onCancel}>
@@ -869,6 +963,57 @@ function TemplateEditor({ template, onApply, onCancel }) {
           입력창에 추가
         </button>
       </div>
+    </div>
+  )
+}
+
+function LiveTemplateEditor({
+  template,
+  draft,
+  order,
+  onChange,
+  onToggleCollapse,
+}) {
+  const changeValue = (field, rawValue) => {
+    onChange(field.key, field.uppercase ? rawValue.toUpperCase() : rawValue)
+  }
+
+  return (
+    <div className={`live-template-editor ${draft.collapsed ? 'collapsed' : ''}`}>
+      <div className="live-template-heading">
+        <div>
+          <span className="selection-order-badge">선택 {order}</span>
+          <strong>실시간 문구 작성</strong>
+        </div>
+        <button
+          type="button"
+          className="secondary-button compact-button"
+          onClick={onToggleCollapse}
+        >
+          {draft.collapsed ? '펼치기' : '접기'}
+        </button>
+      </div>
+
+      <div className="live-template-preview">{draft.generatedText}</div>
+
+      {!draft.collapsed && (
+        <>
+          {(template.fields || []).length > 0 ? (
+            <TemplateFieldInputs
+              template={template}
+              values={draft.values}
+              onChange={changeValue}
+            />
+          ) : (
+            <p className="live-template-note">
+              추가 입력이 없는 문구입니다. 체크를 해제하면 중간보고에서 제거됩니다.
+            </p>
+          )}
+          <p className="live-template-note">
+            입력값은 위 중간보고 입력창에 실시간으로 반영됩니다.
+          </p>
+        </>
+      )}
     </div>
   )
 }
@@ -1044,6 +1189,10 @@ function ReportCard({
   updateReport,
   deleteReport,
   appendToReport,
+  addLiveTemplate,
+  removeLiveTemplate,
+  updateLiveTemplate,
+  toggleLiveTemplate,
   syncHistory,
   notify,
 }) {
@@ -1051,8 +1200,23 @@ function ReportCard({
   const [templatesOpen, setTemplatesOpen] = useState(false)
   const visibleTemplates = getVisibleTemplates(incident)
   const title = incident.title.trim() || '출동 위치'
+  const selectedDrafts = Array.isArray(report.templateDrafts)
+    ? report.templateDrafts
+    : []
+  const selectedIds = new Set(selectedDrafts.map((draft) => draft.templateId))
+  const selectedTemplateRows = selectedDrafts
+    .map((draft) => ({ draft, template: getTemplateById(draft.templateId) }))
+    .filter((item) => item.template)
+  const unselectedTemplates = visibleTemplates.filter(
+    (template) => !selectedIds.has(template.id),
+  )
 
   const selectTemplate = (template) => {
+    if (selectedIds.has(template.id)) {
+      toggleLiveTemplate(report.id, template.id)
+      return
+    }
+
     if (!template.fields?.length) {
       appendToReport(report.id, template.build({}), template.id)
       setSelectedTemplate(null)
@@ -1067,11 +1231,72 @@ function ReportCard({
   }
 
   const copyReport = async () => {
-    const text = `[${title}]${report.content.trim() ? `\n${report.content.trim()}` : ''}`
+    const text = `[${title}]${report.content.trim() ? `
+${report.content.trim()}` : ''}`
     await copyText(text)
     syncHistory(report.content)
     notify('개별 중간보고를 복사했습니다.')
   }
+
+  const renderTemplateRow = (template, draft = null, order = 0) => (
+    <div className={`template-option ${draft ? 'multi-selected' : ''}`} key={template.id}>
+      <div className="template-choice-row">
+        <label
+          className="template-multi-check"
+          title="체크하면 여러 문구를 선택 순서대로 작성할 수 있습니다."
+        >
+          <input
+            type="checkbox"
+            checked={Boolean(draft)}
+            onChange={(event) => {
+              if (event.target.checked) addLiveTemplate(report.id, template)
+              else removeLiveTemplate(report.id, template.id)
+              setSelectedTemplate((current) =>
+                current?.id === template.id ? null : current,
+              )
+            }}
+          />
+          <span className="sr-only">다중 선택</span>
+        </label>
+
+        <button
+          type="button"
+          className={`template-select-button ${
+            GAS_TEMPLATES.some((item) => item.id === template.id)
+              ? 'gas-template'
+              : ''
+          } ${draft ? 'selected-template-button' : ''}`}
+          onClick={() => selectTemplate(template)}
+        >
+          {template.label}
+        </button>
+      </div>
+
+      {draft && (
+        <LiveTemplateEditor
+          template={template}
+          draft={draft}
+          order={order}
+          onToggleCollapse={() => toggleLiveTemplate(report.id, template.id)}
+          onChange={(key, value) =>
+            updateLiveTemplate(report.id, template.id, key, value)
+          }
+        />
+      )}
+
+      {!draft && selectedTemplate?.id === template.id && (
+        <TemplateEditor
+          template={selectedTemplate}
+          onCancel={() => setSelectedTemplate(null)}
+          onApply={(text) => {
+            appendToReport(report.id, text, selectedTemplate.id)
+            setSelectedTemplate(null)
+            setTemplatesOpen(false)
+          }}
+        />
+      )}
+    </div>
+  )
 
   return (
     <article className="card report-card">
@@ -1110,34 +1335,24 @@ function ReportCard({
         onToggle={(event) => setTemplatesOpen(event.currentTarget.open)}
       >
         <summary>자주 쓰는 대응 문구</summary>
+        <div className="template-multi-guide">
+          <strong>다중 선택</strong>
+          <span>왼쪽 체크박스를 누른 순서대로 위에 모이며 실시간으로 작성됩니다.</span>
+        </div>
         <div className="template-list">
-          {visibleTemplates.map((template) => (
-            <div className="template-option" key={template.id}>
-              <button
-                type="button"
-                className={`template-select-button ${
-                  GAS_TEMPLATES.some((item) => item.id === template.id)
-                    ? 'gas-template'
-                    : ''
-                }`}
-                onClick={() => selectTemplate(template)}
-              >
-                {template.label}
-              </button>
-
-              {selectedTemplate?.id === template.id && (
-                <TemplateEditor
-                  template={selectedTemplate}
-                  onCancel={() => setSelectedTemplate(null)}
-                  onApply={(text) => {
-                    appendToReport(report.id, text, selectedTemplate.id)
-                    setSelectedTemplate(null)
-                    setTemplatesOpen(false)
-                  }}
-                />
+          {selectedTemplateRows.length > 0 && (
+            <div className="selected-template-group">
+              {selectedTemplateRows.map(({ template, draft }, index) =>
+                renderTemplateRow(template, draft, index + 1),
               )}
             </div>
-          ))}
+          )}
+
+          {unselectedTemplates.length > 0 && (
+            <div className="unselected-template-group">
+              {unselectedTemplates.map((template) => renderTemplateRow(template))}
+            </div>
+          )}
         </div>
       </details>
 
@@ -1158,7 +1373,6 @@ function ReportCard({
           </div>
         </details>
       )}
-
 
       <div className="report-actions">
         <button type="button" className="secondary-button" onClick={copyReport}>
@@ -1377,6 +1591,139 @@ function App() {
             : report,
         ),
       }
+    })
+  }
+
+  const addLiveTemplate = (reportId, template) => {
+    updateCurrent((incident) => {
+      let generatedText = ''
+      const reports = incident.reports.map((report) => {
+        if (report.id !== reportId) return report
+        const previousDrafts = Array.isArray(report.templateDrafts)
+          ? report.templateDrafts
+          : []
+        if (previousDrafts.some((draft) => draft.templateId === template.id)) {
+          return report
+        }
+
+        const values = getDefaultValues(template)
+        generatedText = buildLiveTemplateText(template, values)
+        const nextDraft = {
+          ...createTemplateDraft(template.id, values),
+          generatedText,
+        }
+        const nextDrafts = [...previousDrafts, nextDraft]
+
+        return {
+          ...report,
+          templateDrafts: nextDrafts,
+          content: rebuildReportContentFromDrafts(
+            report.content,
+            previousDrafts,
+            nextDrafts,
+          ),
+        }
+      })
+
+      let nextIncident = {
+        ...incident,
+        reports,
+        usedQuickTemplateIds: QUICK_ONCE_TEMPLATE_IDS.includes(template.id)
+          ? Array.from(
+              new Set([...(incident.usedQuickTemplateIds || []), template.id]),
+            )
+          : incident.usedQuickTemplateIds || [],
+      }
+
+      if (generatedText && isLiveTemplateComplete(template, getDefaultValues(template))) {
+        nextIncident = addHistoryItems(nextIncident, generatedText)
+      }
+      return nextIncident
+    })
+  }
+
+  const removeLiveTemplate = (reportId, templateId) => {
+    updateCurrent((incident) => ({
+      ...incident,
+      reports: incident.reports.map((report) => {
+        if (report.id !== reportId) return report
+        const previousDrafts = Array.isArray(report.templateDrafts)
+          ? report.templateDrafts
+          : []
+        const nextDrafts = previousDrafts.filter(
+          (draft) => draft.templateId !== templateId,
+        )
+
+        return {
+          ...report,
+          templateDrafts: nextDrafts,
+          content: rebuildReportContentFromDrafts(
+            report.content,
+            previousDrafts,
+            nextDrafts,
+          ),
+        }
+      }),
+    }))
+  }
+
+  const updateLiveTemplate = (reportId, templateId, key, value) => {
+    updateCurrent((incident) => {
+      const reports = incident.reports.map((report) => {
+        if (report.id !== reportId) return report
+        const previousDrafts = Array.isArray(report.templateDrafts)
+          ? report.templateDrafts
+          : []
+        const nextDrafts = previousDrafts.map((draft) => {
+          if (draft.templateId !== templateId) return draft
+          const template = getTemplateById(templateId)
+          if (!template) return draft
+          const values = { ...draft.values, [key]: value }
+          const generatedText = buildLiveTemplateText(template, values)
+          return { ...draft, values, generatedText }
+        })
+
+        return {
+          ...report,
+          templateDrafts: nextDrafts,
+          content: rebuildReportContentFromDrafts(
+            report.content,
+            previousDrafts,
+            nextDrafts,
+          ),
+        }
+      })
+
+      return { ...incident, reports }
+    })
+  }
+
+  const toggleLiveTemplate = (reportId, templateId) => {
+    updateCurrent((incident) => {
+      let historyText = ''
+      const reports = incident.reports.map((report) => {
+        if (report.id !== reportId) return report
+
+        return {
+          ...report,
+          templateDrafts: (report.templateDrafts || []).map((draft) => {
+            if (draft.templateId !== templateId) return draft
+            const nextCollapsed = !draft.collapsed
+            const template = getTemplateById(templateId)
+            if (
+              nextCollapsed &&
+              template &&
+              isLiveTemplateComplete(template, draft.values)
+            ) {
+              historyText = draft.generatedText
+            }
+            return { ...draft, collapsed: nextCollapsed }
+          }),
+        }
+      })
+
+      const nextIncident = { ...incident, reports }
+      return historyText ? addHistoryItems(nextIncident, historyText) : nextIncident
     })
   }
 
@@ -1671,7 +2018,7 @@ function App() {
             <div>
               <p className="section-index">SITUATION REPORT</p>
               <h2>상황별 중간보고</h2>
-              <p>문구를 여러 개 선택하면 같은 입력창 아래에 순서대로 누적됩니다.</p>
+              <p>체크한 문구는 선택 순서대로 위에 모이며 입력값이 실시간 반영됩니다.</p>
             </div>
           </div>
 
@@ -1683,6 +2030,10 @@ function App() {
                 updateReport={updateReport}
                 deleteReport={deleteReport}
                 appendToReport={appendToReport}
+                addLiveTemplate={addLiveTemplate}
+                removeLiveTemplate={removeLiveTemplate}
+                updateLiveTemplate={updateLiveTemplate}
+                toggleLiveTemplate={toggleLiveTemplate}
                 syncHistory={syncHistory}
                 notify={notify}
                 key={report.id}
